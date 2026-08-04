@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/bothos/internal/intent"
 )
 
 // ErrPolicyDenied is returned when a trigger is denied at dispatch (disabled

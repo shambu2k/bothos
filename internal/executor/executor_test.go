@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/bothos/internal/intent"
 )
 
 // testNow matches the fixed instant used by the intent tests.

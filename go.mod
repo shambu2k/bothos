@@ -1,4 +1,4 @@
-module github.com/shambu2k/maintainer-bot
+module github.com/shambu2k/bothos
 
 go 1.26.5
 

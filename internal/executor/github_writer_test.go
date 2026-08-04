@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/google/go-github/v69/github"
-	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/bothos/internal/intent"
 )
 
 type recordedRequest struct {

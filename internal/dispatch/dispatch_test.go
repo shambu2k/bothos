@@ -5,10 +5,10 @@ import (
 	"testing"
 
 	"github.com/google/go-github/v69/github"
-	"github.com/shambu2k/maintainer-bot/internal/ledger"
-	"github.com/shambu2k/maintainer-bot/internal/policy"
-	"github.com/shambu2k/maintainer-bot/internal/queue"
-	"github.com/shambu2k/maintainer-bot/internal/testdb"
+	"github.com/shambu2k/bothos/internal/ledger"
+	"github.com/shambu2k/bothos/internal/policy"
+	"github.com/shambu2k/bothos/internal/queue"
+	"github.com/shambu2k/bothos/internal/testdb"
 )
 
 func baseRules(ctx context.Context, owner, name string) (policy.Rules, error) {

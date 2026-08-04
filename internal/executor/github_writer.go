@@ -6,7 +6,7 @@ import (
 	"net/http"
 
 	"github.com/google/go-github/v69/github"
-	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/bothos/internal/intent"
 )
 
 // githubWriter is the thin network adapter over go-github. It is the only code

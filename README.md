@@ -1,4 +1,4 @@
-# maintainer-bot
+# bothos
 
 Self-hosted, homelab-deployed, per-repo AI maintainer for GitHub.
 

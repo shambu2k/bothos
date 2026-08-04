@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/google/go-github/v69/github"
-	"github.com/shambu2k/maintainer-bot/internal/ledger"
-	"github.com/shambu2k/maintainer-bot/internal/policy"
-	"github.com/shambu2k/maintainer-bot/internal/queue"
+	"github.com/shambu2k/bothos/internal/ledger"
+	"github.com/shambu2k/bothos/internal/policy"
+	"github.com/shambu2k/bothos/internal/queue"
 )
 
 // RulesLoader resolves per-repo policy rules. Phase 0 falls back to defaults;

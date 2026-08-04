@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/bothos/internal/intent"
 )
 
 // Sandbox is the ephemeral per-run container handle. The worker creates it,

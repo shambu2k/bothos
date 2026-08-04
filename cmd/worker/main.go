@@ -12,8 +12,8 @@ import (
 	"syscall"
 
 	"github.com/riverqueue/river"
-	"github.com/shambu2k/maintainer-bot/internal/ledger"
-	"github.com/shambu2k/maintainer-bot/internal/queue"
+	"github.com/shambu2k/bothos/internal/ledger"
+	"github.com/shambu2k/bothos/internal/queue"
 )
 
 func main() {

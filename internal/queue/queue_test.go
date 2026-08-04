@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
-	"github.com/shambu2k/maintainer-bot/internal/testdb"
+	"github.com/shambu2k/bothos/internal/testdb"
 )
 
 func TestQueueEnqueuesAndWorksRunJob(t *testing.T) {

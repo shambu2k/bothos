@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/shambu2k/maintainer-bot/internal/intent"
-	"github.com/shambu2k/maintainer-bot/internal/testdb"
+	"github.com/shambu2k/bothos/internal/intent"
+	"github.com/shambu2k/bothos/internal/testdb"
 )
 
 func newTestStore(t *testing.T) *Postgres {

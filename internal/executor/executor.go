@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/bothos/internal/intent"
 )
 
 // Credential is a resolved fine-grained PAT bound to one resource owner at one

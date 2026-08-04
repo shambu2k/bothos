@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/bothos/internal/intent"
 )
 
 var now = time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
