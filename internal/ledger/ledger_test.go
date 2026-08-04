@@ -3,48 +3,15 @@ package ledger
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shambu2k/maintainer-bot/internal/intent"
+	"github.com/shambu2k/maintainer-bot/internal/testdb"
 )
-
-const testDB = "maintbot_test"
-
-// ensureTestDB creates the test database (the maintbot role is cluster
-// superuser in the official image) so tests never touch the dev DB.
-func ensureTestDB(t *testing.T) string {
-	t.Helper()
-	adminDSN := os.Getenv("TEST_ADMIN_DATABASE_URL")
-	if adminDSN == "" {
-		adminDSN = "postgres://maintbot:maintbot-dev@localhost:5432/postgres"
-	}
-	conn, err := pgx.Connect(context.Background(), adminDSN)
-	if err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	defer conn.Close(context.Background())
-	var exists bool
-	if err := conn.QueryRow(context.Background(),
-		`SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)`, testDB).Scan(&exists); err != nil {
-		t.Fatalf("check db: %v", err)
-	}
-	if !exists {
-		if _, err := conn.Exec(context.Background(), "CREATE DATABASE "+testDB); err != nil {
-			t.Fatalf("create db: %v", err)
-		}
-	}
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://maintbot:maintbot-dev@localhost:5432/" + testDB
-	}
-	return dsn
-}
 
 func newTestStore(t *testing.T) *Postgres {
 	t.Helper()
-	dsn := ensureTestDB(t)
+	dsn := testdb.DSN(t)
 	ctx := context.Background()
 	st, err := New(ctx, dsn)
 	if err != nil {
@@ -54,12 +21,7 @@ func newTestStore(t *testing.T) *Postgres {
 		st.Close()
 		t.Fatalf("migrate: %v", err)
 	}
-	// clean slate between tests
-	for _, tbl := range []string{"intents", "runs", "findings", "capability_gaps"} {
-		if _, err := st.pool.Exec(ctx, "TRUNCATE "+tbl+" CASCADE"); err != nil {
-			t.Fatalf("truncate %s: %v", tbl, err)
-		}
-	}
+	testdb.Truncate(t, dsn, "intents", "runs", "findings", "capability_gaps")
 	t.Cleanup(st.Close)
 	return st
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -96,7 +97,21 @@ type Run struct {
 // InsertRun records a run at dispatch time. Every webhook lands here with its
 // policy decision before anything async happens.
 func (p *Postgres) InsertRun(ctx context.Context, r Run) error {
-	_, err := p.pool.Exec(ctx, `
+	return p.insertRun(ctx, p.pool, r)
+}
+
+// InsertRunTx inserts the run inside a caller-owned transaction so the run row
+// and its River job commit atomically (the plan's River.InsertTx).
+func (p *Postgres) InsertRunTx(ctx context.Context, tx pgx.Tx, r Run) error {
+	return p.insertRun(ctx, tx, r)
+}
+
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func (p *Postgres) insertRun(ctx context.Context, ex execer, r Run) error {
+	_, err := ex.Exec(ctx, `
 		INSERT INTO runs(id, repo_id, trigger, scope_kind, scope_number, "grant", decision, deny_reason, status)
 		VALUES ($1,$2,$3,$4,NULLIF($5,0),$6,$7,NULLIF($8,''),$9)`,
 		r.ID, r.RepoID, r.Trigger, r.ScopeKind, r.ScopeNumber, r.Grant, r.Decision, r.DenyReason, r.Status)
