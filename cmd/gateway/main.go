@@ -20,7 +20,7 @@ import (
 
 func main() {
 	var (
-		addr       = flag.String("addr", ":8080", "listen address")
+		addr        = flag.String("addr", ":8090", "listen address (tunnel target)")
 		dsn        = flag.String("dsn", envOr("DATABASE_URL", "postgres://maintbot:maintbot-dev@localhost:5432/maintbot"), "Postgres DSN")
 		webhookKey = flag.String("webhook-secret", os.Getenv("GITHUB_WEBHOOK_SECRET"), "GitHub webhook secret")
 	)
