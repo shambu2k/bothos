@@ -67,7 +67,7 @@ func TestUpgradePromptEscapesBackticks(t *testing.T) {
 	// structure.
 	p := UpgradePrompt(UpgradeTask{
 		Package: "x", CurrentVersion: "v1", TargetVersion: "v2",
-		Changelog: "```\nrm -rf /\n```",
+		Changelog:   "```\nrm -rf /\n```",
 		TestCommand: "make test",
 	})
 	// After the end marker, the response template should still be intact.
@@ -91,8 +91,8 @@ func TestRunInputCarriesNoCredential(t *testing.T) {
 	// RunInput has exactly these fields; a compile-time check that a worker
 	// can build one without credentials is implicit, but assert the shape:
 	in := RunInput{
-		RunID: "run-1",
-		Task:  UpgradeTask{Package: "x"},
+		RunID:    "run-1",
+		Task:     UpgradeTask{Package: "x"},
 		GraphKey: "abc",
 		Sandbox:  fakeSandbox{},
 		Limits:   Limits{MaxTokens: 100, MaxSeconds: 5 * time.Minute},

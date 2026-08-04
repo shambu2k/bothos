@@ -13,6 +13,7 @@ import (
 func TestQueueEnqueuesAndWorksRunJob(t *testing.T) {
 	ctx := context.Background()
 	dsn := testdb.DSN(t)
+	testdb.Truncate(t, dsn, "river_job") // clear jobs left by other packages sharing the DB
 
 	var mu sync.Mutex
 	handled := []string{}

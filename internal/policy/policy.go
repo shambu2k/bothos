@@ -28,6 +28,18 @@ const (
 	TriggerIssueLabeled
 )
 
+// String returns the ledger's trigger label (the runs.trigger column).
+func (t TriggerKind) String() string {
+	switch t {
+	case TriggerPullRequest:
+		return "webhook_pull_request"
+	case TriggerIssueLabeled:
+		return "webhook_issue_labeled"
+	default:
+		return "scheduled"
+	}
+}
+
 // Trigger is the raw event the policy evaluates. It is the only unaudited
 // input; everything else in the grant is fixed by these rules.
 type Trigger struct {

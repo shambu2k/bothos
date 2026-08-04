@@ -45,11 +45,15 @@ func Open(ctx context.Context, dsn string, queueCfg map[string]river.QueueConfig
 	}
 
 	workers := river.NewWorkers()
-	if handler != nil {
-		river.AddWorker(workers, river.WorkFunc(func(ctx context.Context, job *river.Job[RunJob]) error {
-			return handler(ctx, job.Args.RunID)
-		}))
+	// Always register the RunJob worker: River requires the kind to be in the
+	// bundle even to InsertTx, and the gateway only ever enqueues. A nil
+	// handler is a fine default for enqueue-only processes.
+	if handler == nil {
+		handler = func(ctx context.Context, runID string) error { return nil }
 	}
+	river.AddWorker(workers, river.WorkFunc(func(ctx context.Context, job *river.Job[RunJob]) error {
+		return handler(ctx, job.Args.RunID)
+	}))
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:  queueCfg,
@@ -73,8 +77,8 @@ func migrateRiver(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func (q *Queue) Pool() *pgxpool.Pool                 { return q.pool }
-func (q *Queue) Client() *river.Client[pgx.Tx]       { return q.client }
+func (q *Queue) Pool() *pgxpool.Pool           { return q.pool }
+func (q *Queue) Client() *river.Client[pgx.Tx] { return q.client }
 
 // EnqueueTx inserts the run job inside the caller's transaction so the run row
 // and its job commit atomically — a redelivered or retried webhook cannot leave

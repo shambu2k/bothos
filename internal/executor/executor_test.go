@@ -82,7 +82,7 @@ type fakeWriter struct {
 	setLabels func(ctx context.Context, cred Credential, spec SetLabelsWrite) (string, error)
 
 	lastOpenPR *OpenPRWrite
-	callCount   int
+	callCount  int
 }
 
 func (f *fakeWriter) OpenPR(ctx context.Context, c Credential, s OpenPRWrite) (string, error) {
