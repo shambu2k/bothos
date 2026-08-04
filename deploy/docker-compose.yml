@@ -1,0 +1,22 @@
+# maintainer-bot spine — Phase 0.
+# postgres: run ledger, findings, River queue, graph index.
+# gateway/worker/executor get added as the plan's later phases land.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: maintbot
+      POSTGRES_PASSWORD: maintbot-dev
+      POSTGRES_DB: maintbot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maintbot -d maintbot"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
