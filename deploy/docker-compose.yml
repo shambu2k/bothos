@@ -1,12 +1,15 @@
-# maintainer-bot spine — Phase 0.
+# bothos spine — Phase 0/1.
 # postgres: run ledger, findings, River queue, graph index.
-# gateway/worker/executor get added as the plan's later phases land.
+# gateway:  webhook receiver (holds the webhook secret, no GitHub token).
+# worker:   dequeues run jobs (Phase 0 stub marks them; no credentials).
+#
+# The gateway/worker reach Postgres via the compose service name, not localhost.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: maintbot
-      POSTGRES_PASSWORD: maintbot-dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maintbot-dev}
       POSTGRES_DB: maintbot
     ports:
       - "5432:5432"
@@ -17,6 +20,27 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  gateway:
+    build: ..
+    command: ["/usr/local/bin/bothos-gateway", "-addr", ":8090"]
+    environment:
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set in deploy/.env}
+      DATABASE_URL: postgres://maintbot:${POSTGRES_PASSWORD:-maintbot-dev}@postgres:5432/maintbot
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: ..
+    command: ["/usr/local/bin/bothos-worker"]
+    environment:
+      DATABASE_URL: postgres://maintbot:${POSTGRES_PASSWORD:-maintbot-dev}@postgres:5432/maintbot
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:
