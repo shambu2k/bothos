@@ -1,0 +1,23 @@
+# Go
+/bin/
+*.exe
+*.test
+*.out
+coverage.out
+
+# Build artifacts
+dist/
+build/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local secrets — never commit credentials
+.env
+.env.*
+!*.env.example
