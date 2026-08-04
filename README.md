@@ -23,10 +23,15 @@ this land* field from an immutable dispatch-time Grant. See
 | Package | Responsibility |
 |---|---|
 | `internal/intent` | Content-only intent schema + validation kernel (safe by construction) |
-| *(planned)* `internal/policy` | OPA/grants — computes the immutable Grant at dispatch |
-| *(planned)* `internal/executor` | Sole holder of GitHub PATs; resolves intents against GitHub |
+| `internal/executor` | Sole holder of PATs; resolves intents against GitHub (logic + go-github adapter) |
+| `internal/policy` | Dispatch-time grants as data — the immutable capability surface per run |
+| `internal/runtime` | `AgentRuntime` seam + injection-aware structured upgrade prompt |
+| `internal/graphcache` | Deterministic graph cache keying + retention (`sha256(tool‖cfg‖tree)`) |
 | *(planned)* `internal/ledger` | `runs`/`findings` Postgres spine |
-| *(planned)* `internal/runtime` | `AgentRuntime` interface — swappable agent backends |
+| *(planned)* `internal/queue` | River-backed transactional queue + periodic jobs |
+| *(planned)* `cmd/gateway` | Webhook receiver (sig validation, ack-fast, dispatch) |
+| *(planned)* `cmd/worker` | Run orchestration: sandbox → runtime → executor |
+| *(planned)* `cmd/executor` | Executor container entrypoint |
 
 ## Phases
 
@@ -35,10 +40,12 @@ and is committed before the next starts.
 
 - [ ] Phase 0 — spine (webhook + River + Postgres), no LLM
 - [ ] Phase 1 — deterministic scans (osv-scanner / trivy / renovate dry-run)
-- [x] Phase 2 core — intent schema + validation kernel (this package)
-- [ ] Phase 2 — executor + AgentRuntime behind dependency-upgrade workload
+- [x] Phase 2 core — intent schema + validation kernel
+- [x] Phase 2 core — executor (logic + go-github adapter, idempotent, PAT-only-held-here)
+- [x] Phase 2 core — policy (dispatch-time grants) + runtime seam + graph cache
+- [ ] Phase 2 — worker orchestration + real sandbox bound in, 10 upgrade PRs exit
 - [ ] Phase 3 — PR review (read-only, fork-safe)
-- [ ] Phase 4 — labeled issues (actor allowlist)
+- [ ] Phase 4 — labeled issues (actor allowlist in policy ✅, worker wiring)
 - [ ] Phase 5 — doc linting (taxonomy → redundancy → contradiction)
 
 ## Develop
