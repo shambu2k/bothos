@@ -20,17 +20,23 @@ type Config struct {
 	// Tools are the scanners to run against the cloned tree. Defaults to
 	// scan.StandardTools().
 	Tools []scan.Tool
+	// Renovate dry-runs against the cloned tree and returns the available-update
+	// set. Nil defaults to scan.RunRenovate (the real cli). A nil Renovate that
+	// is skipped — pass a no-op to disable.
+	Renovate func(ctx context.Context, dir string) ([]scan.Update, error)
 }
 
-// Upserter persists findings to the ledger.
+// Upserter persists findings and updates to the ledger.
 type Upserter interface {
 	UpsertFindings(ctx context.Context, runID string, findings []scan.Finding) error
+	UpsertUpdates(ctx context.Context, runID string, updates []scan.Update) error
 }
 
-// Run clones repo into a temp dir, runs the scanners, and persists the findings
-// against an existing run (the caller inserts the run row so findings stay
-// traceable). It returns the number of findings.
-func Run(ctx context.Context, cfg Config, store Upserter, repo, runID string) (int, error) {
+// Run clones repo into a temp dir, runs the scanners, persists the findings,
+// then runs Renovate dry-run and persists the available-update set — all against
+// an existing run (the caller inserts the run row so findings stay traceable).
+// It returns the counts of findings and updates.
+func Run(ctx context.Context, cfg Config, store Upserter, repo, runID string) (nFindings, nUpdates int, err error) {
 	clone := cfg.Clone
 	if clone == nil {
 		clone = ShallowClone
@@ -42,25 +48,45 @@ func Run(ctx context.Context, cfg Config, store Upserter, repo, runID string) (i
 
 	dir, err := os.MkdirTemp("", "bothos-scan-")
 	if err != nil {
-		return 0, fmt.Errorf("temp dir: %w", err)
+		return 0, 0, fmt.Errorf("temp dir: %w", err)
 	}
 	defer os.RemoveAll(dir)
 
 	if err := clone(ctx, dir, repo); err != nil {
-		return 0, fmt.Errorf("clone %s: %w", repo, err)
+		return 0, 0, fmt.Errorf("clone %s: %w", repo, err)
 	}
 	findings, err := scan.Run(ctx, dir, tools)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	// The parsers don't know the repo; stamp it so findings are attributable.
 	for i := range findings {
 		findings[i].RepoID = repo
 	}
 	if err := store.UpsertFindings(ctx, runID, findings); err != nil {
-		return 0, fmt.Errorf("upsert findings: %w", err)
+		return 0, 0, fmt.Errorf("upsert findings: %w", err)
 	}
-	return len(findings), nil
+	nFindings = len(findings)
+
+	if cfg.Renovate != nil {
+		updates, err := cfg.Renovate(ctx, dir)
+		if err != nil {
+			return nFindings, 0, fmt.Errorf("renovate dry-run: %w", err)
+		}
+		for i := range updates {
+			updates[i].RepoID = repo
+		}
+		if err := store.UpsertUpdates(ctx, runID, updates); err != nil {
+			return nFindings, 0, fmt.Errorf("upsert updates: %w", err)
+		}
+		nUpdates = len(updates)
+	}
+	return nFindings, nUpdates, nil
+}
+
+// RealRenovate returns a Renovate run using the real `renovate` CLI.
+func RealRenovate(ctx context.Context, dir string) ([]scan.Update, error) {
+	return scan.RunRenovate(ctx, dir, "renovate")
 }
 
 // ShallowClone fetches repo (owner/name) with --depth 1 so periodic scans do
