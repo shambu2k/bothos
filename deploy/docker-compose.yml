@@ -41,6 +41,7 @@ services:
     command: ["/usr/local/bin/bothos-worker"]
     environment:
       DATABASE_URL: postgres://maintbot:${POSTGRES_PASSWORD:-maintbot-dev}@postgres:5432/maintbot
+      GITHUB_READ_TOKEN: ${GITHUB_READ_TOKEN:-}   # readonly PAT for scanning private repos
     depends_on:
       postgres:
         condition: service_healthy

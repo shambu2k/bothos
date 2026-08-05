@@ -3,6 +3,7 @@ package scan
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 )
@@ -13,6 +14,17 @@ type Tool struct {
 	Bin     string              // executable to spawn
 	Args    func(dir string) []string
 	Parse   func(out []byte) ([]Finding, error)
+	// OKExit reports whether an exit code means "the scan ran" (not a hard
+	// failure). Default is code==0. osv-scanner returns 1 when it finds
+	// vulnerabilities, which is a successful scan with findings.
+	OKExit func(code int) bool
+}
+
+func (t Tool) exitOK(code int) bool {
+	if t.OKExit == nil {
+		return code == 0
+	}
+	return t.OKExit(code)
 }
 
 // StandardTools returns the scanners that run by default. osv-scanner is the
@@ -23,7 +35,10 @@ type Tool struct {
 func StandardTools() []Tool {
 	return []Tool{
 		{Scanner: ScannerOSV, Bin: "osv-scanner",
-			Args: func(dir string) []string { return []string{"--format", "json", dir} }, Parse: ParseOSV},
+			Args:   func(dir string) []string { return []string{"--format", "json", dir} },
+			Parse:  ParseOSV,
+			OKExit: func(code int) bool { return code == 0 || code == 1 }, // 1 = findings found
+		},
 	}
 }
 
@@ -38,7 +53,13 @@ func Run(ctx context.Context, dir string, tools []Tool) ([]Finding, error) {
 		cmd.Stdout = &out
 		cmd.Stderr = &errBuf
 		if err := cmd.Run(); err != nil {
-			return nil, fmt.Errorf("%s: %w: %s", tl.Scanner, err, errBuf.String())
+			var exErr *exec.ExitError
+			if errors.As(err, &exErr) && tl.exitOK(exErr.ExitCode()) {
+				// tool succeeded and signalled findings with a non-zero exit
+				// (e.g. osv-scanner exits 1 when it finds vulns); parse below
+			} else {
+				return nil, fmt.Errorf("%s: %w: %s", tl.Scanner, err, errBuf.String())
+			}
 		}
 		fs, err := tl.Parse(out.Bytes())
 		if err != nil {

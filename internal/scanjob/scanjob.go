@@ -64,10 +64,15 @@ func Run(ctx context.Context, cfg Config, store Upserter, repo, runID string) (i
 }
 
 // ShallowClone fetches repo (owner/name) with --depth 1 so periodic scans do
-// not drag history into the sandbox.
+// not drag history into the sandbox. When GITHUB_READ_TOKEN is set (a readonly
+// fine-grained PAT, gitignored), it authenticates over https so private repos
+// can be scanned without giving the worker any write credential.
 func ShallowClone(ctx context.Context, dir, repo string) error {
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "-q",
-		"https://github.com/"+repo+".git", dir)
+	url := "https://github.com/" + repo + ".git"
+	if tok := os.Getenv("GITHUB_READ_TOKEN"); tok != "" {
+		url = "https://x-access-token:" + tok + "@github.com/" + repo + ".git"
+	}
+	cmd := exec.CommandContext(ctx, "git", "clone", "--depth", "1", "-q", url, dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%v: %s", err, out)
 	}

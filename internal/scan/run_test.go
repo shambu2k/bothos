@@ -54,6 +54,26 @@ func TestRunExecutesScannerAndParses(t *testing.T) {
 	}
 }
 
+func TestRunTreatsOsvExit1AsFindings(t *testing.T) {
+	// osv-scanner exits 1 when it finds vulnerabilities; that is a successful
+	// scan with findings, not a failure.
+	dir := t.TempDir()
+	bin := writeScript(t, dir, "fake-osv1", fakeScannerScript+"\nexit 1\n")
+
+	got, err := Run(context.Background(), dir, []Tool{{
+		Scanner: ScannerOSV, Bin: bin,
+		Args:   func(dir string) []string { return nil },
+		Parse:  ParseOSV,
+		OKExit: func(code int) bool { return code == 0 || code == 1 },
+	}})
+	if err != nil {
+		t.Fatalf("exit-1-with-findings must be treated as success: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1", len(got))
+	}
+}
+
 func TestRunPropagatesToolFailure(t *testing.T) {
 	dir := t.TempDir()
 	bin := writeScript(t, dir, "fake-bad", fakeFailingScript)
