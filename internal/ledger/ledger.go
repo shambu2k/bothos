@@ -171,6 +171,46 @@ func (p *Postgres) UpsertFindings(ctx context.Context, runID string, findings []
 	return br.Close()
 }
 
+// Candidate is one actionable upgrade: a finding that has a fixed version
+// AND an available update for the same package. This is the Phase 2 PR-ready
+// list ("one finding -> one run -> one PR").
+type Candidate struct {
+	RepoID         string
+	Package        string
+	CurrentVersion string // installed version
+	TargetVersion  string // fix version from the finding
+	Severity       string
+	AdvisoryID     string
+	UpdateType     string // from the available update
+}
+
+// ActionableCandidates joins findings (with a fix) against the available
+// update set (same package) to return the concrete upgrade candidates.
+func (p *Postgres) ActionableCandidates(ctx context.Context, repoID string) ([]Candidate, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT f.repo_id, f.package, f.current_version, f.target_version,
+		       f.severity, f.advisory_id, u.update_type
+		FROM findings f
+		JOIN updates u ON u.repo_id = f.repo_id AND u.package = f.package
+		WHERE f.repo_id = $1
+		  AND f.target_version IS NOT NULL AND f.target_version <> ''
+		ORDER BY (f.severity='CRITICAL') DESC, (f.severity='HIGH') DESC, f.package`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Candidate
+	for rows.Next() {
+		var c Candidate
+		if err := rows.Scan(&c.RepoID, &c.Package, &c.CurrentVersion, &c.TargetVersion,
+			&c.Severity, &c.AdvisoryID, &c.UpdateType); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // UpsertUpdates inserts or refreshes the Renovate available-update set in
 // place, keyed on (repo_id, ecosystem, package), so repeated dry-runs never
 // duplicate a row. runID links the scan that produced it.
