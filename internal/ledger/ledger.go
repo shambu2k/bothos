@@ -211,6 +211,27 @@ func (p *Postgres) ActionableCandidates(ctx context.Context, repoID string) ([]C
 	return out, rows.Err()
 }
 
+// Updates returns a repo's available-update set.
+func (p *Postgres) Updates(ctx context.Context, repoID string) ([]scan.Update, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT repo_id, ecosystem, package, current_version, target_version, update_type
+		FROM updates WHERE repo_id=$1 ORDER BY package`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []scan.Update
+	for rows.Next() {
+		var u scan.Update
+		if err := rows.Scan(&u.RepoID, &u.Ecosystem, &u.Package, &u.CurrentVersion,
+			&u.TargetVersion, &u.UpdateType); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
 // UpsertUpdates inserts or refreshes the Renovate available-update set in
 // place, keyed on (repo_id, ecosystem, package), so repeated dry-runs never
 // duplicate a row. runID links the scan that produced it.

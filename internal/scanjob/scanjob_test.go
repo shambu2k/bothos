@@ -50,12 +50,12 @@ func TestRunScanClonesScansAndUpserts(t *testing.T) {
 	tools := []scan.Tool{{Scanner: scan.ScannerOSV, Bin: bin,
 		Args: func(dir string) []string { return nil }, Parse: scan.ParseOSV}}
 
-	n, err := Run(ctx, Config{Clone: fakeClone, Tools: tools}, st, "shambu2k/repo", "scan-1")
+	n, nUpdates, err := Run(ctx, Config{Clone: fakeClone, Tools: tools}, st, "shambu2k/repo", "scan-1")
 	if err != nil {
 		t.Fatalf("run scan: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 finding, got %d", n)
+	if n != 1 || nUpdates != 0 {
+		t.Fatalf("expected 1 finding / 0 updates (no renovate), got %d / %d", n, nUpdates)
 	}
 
 	findings, err := st.Findings(ctx, "shambu2k/repo")
@@ -64,5 +64,42 @@ func TestRunScanClonesScansAndUpserts(t *testing.T) {
 	}
 	if findings[0].AdvisoryID != "GHSA-abc" || findings[0].TargetVersion != "0.0.2" {
 		t.Fatalf("unexpected finding: %+v", findings[0])
+	}
+}
+
+func TestRunScanIncludesRenovate(t *testing.T) {
+	ctx := context.Background()
+	st, err := ledger.New(ctx, testdb.DSN(t))
+	if err != nil {
+		t.Fatalf("ledger: %v", err)
+	}
+	defer st.Close()
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	testdb.Truncate(t, testdb.DSN(t), "runs", "findings", "updates", "river_job")
+	st.InsertRun(ctx, ledger.Run{ID: "scan-2", RepoID: "shambu2k/repo", Trigger: "scheduled",
+		ScopeKind: "scheduled", Grant: []byte(`{}`), Decision: "allow", Status: ledger.RunQueued})
+
+	fakeClone := func(ctx context.Context, dir, repo string) error { return nil }
+	// fake renovate returns a resolvable update
+	fakeRenovate := func(ctx context.Context, dir string) ([]scan.Update, error) {
+		return []scan.Update{{Ecosystem: "npm", Package: "express", CurrentVersion: "4.17.0", TargetVersion: "4.19.0", UpdateType: "minor"}}, nil
+	}
+
+	n, nUp, err := Run(ctx, Config{Clone: fakeClone, Tools: []scan.Tool{}, Renovate: fakeRenovate}, st, "shambu2k/repo", "scan-2")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if n != 0 || nUp != 1 {
+		t.Fatalf("expected 0 findings / 1 update, got %d / %d", n, nUp)
+	}
+	// update must be persisted with the repo stamped on
+	ups, err := st.Updates(ctx, "shambu2k/repo")
+	if err != nil || len(ups) != 1 {
+		t.Fatalf("update not persisted (len=%d): %v", len(ups), err)
+	}
+	if ups[0].Package != "express" || ups[0].TargetVersion != "4.19.0" {
+		t.Fatalf("unexpected update row: %+v", ups[0])
 	}
 }
