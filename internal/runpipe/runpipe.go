@@ -18,14 +18,8 @@ import (
 	"github.com/shambu2k/bothos/internal/upgrade"
 )
 
-// UpgradeMeta is the run.meta payload carried on an upgrade run by the
-// scheduler (Task 8). It pairs a Phase 1 candidate with its upgrade target.
-type UpgradeMeta struct {
-	Package    string `json:"pkg"`
-	From       string `json:"from"`
-	To         string `json:"to"`
-	AdvisoryID string `json:"advisory_id"`
-}
+// UpgradeMeta aliases the run-meta payload defined in internal/upgrade.
+type UpgradeMeta = upgrade.UpgradeMeta
 
 // Store is what runpipe needs from the ledger for one run.
 type Store interface {
