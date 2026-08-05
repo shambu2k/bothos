@@ -1,0 +1,10 @@
+{
+  "name": "bothos-pi-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PI Agent sidecar adapter for the bothos upgrade pipeline",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "latest"
+  }
+}
