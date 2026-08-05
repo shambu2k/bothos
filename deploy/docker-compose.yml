@@ -7,6 +7,7 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: maintbot
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maintbot-dev}
@@ -23,6 +24,7 @@ services:
 
   gateway:
     build: ..
+    restart: unless-stopped
     command: ["/usr/local/bin/bothos-gateway", "-addr", ":8090"]
     environment:
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set in deploy/.env}
@@ -35,6 +37,7 @@ services:
 
   worker:
     build: ..
+    restart: unless-stopped
     command: ["/usr/local/bin/bothos-worker"]
     environment:
       DATABASE_URL: postgres://maintbot:${POSTGRES_PASSWORD:-maintbot-dev}@postgres:5432/maintbot
