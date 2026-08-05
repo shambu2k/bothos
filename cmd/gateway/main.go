@@ -90,6 +90,7 @@ func webhookHandler(secret string, d *dispatch.Dispatcher) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		log.Printf("webhook %s (%T)", github.WebHookType(r), event)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
