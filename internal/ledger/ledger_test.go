@@ -199,11 +199,6 @@ func TestActionableCandidates(t *testing.T) {
 		Package: "tar", CurrentVersion: "7.5.16", TargetVersion: "", Severity: "CRITICAL", AdvisoryID: "GHSA-y"}}); err != nil {
 		t.Fatalf("finding2: %v", err)
 	}
-	// available update only for express
-	if err := st.UpsertUpdates(ctx, "run-1", []scan.Update{{RepoID: "r", Package: "express",
-		CurrentVersion: "4.17.0", TargetVersion: "4.19.0", UpdateType: "minor"}}); err != nil {
-		t.Fatalf("update: %v", err)
-	}
 
 	cands, err := st.ActionableCandidates(ctx, "r")
 	if err != nil {
@@ -213,7 +208,7 @@ func TestActionableCandidates(t *testing.T) {
 		t.Fatalf("want exactly 1 candidate (express), got %d: %+v", len(cands), cands)
 	}
 	c := cands[0]
-	if c.Package != "express" || c.AdvisoryID != "GHSA-x" || c.UpdateType != "minor" {
+	if c.Package != "express" || c.AdvisoryID != "GHSA-x" || c.TargetVersion != "4.19.0" {
 		t.Fatalf("unexpected candidate: %+v", c)
 	}
 }

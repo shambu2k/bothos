@@ -13,6 +13,9 @@ RUN CGO_ENABLED=0 go build -o /out/gateway ./cmd/gateway \
  && CGO_ENABLED=0 go build -o /out/worker ./cmd/worker \
  && CGO_ENABLED=0 go build -o /out/scan ./cmd/scan
 
+# Runtime: lean Alpine with the static Go binaries and the standalone scanners.
+# (Renovate is NOT included — its dry-run report generation is deferred until
+# target repos carry a renovate.json; see plan for the pivot.)
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates git
 COPY --from=build /go/bin/govulncheck /usr/local/bin/govulncheck

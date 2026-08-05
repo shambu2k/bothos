@@ -32,7 +32,7 @@ func TestRunRenovate(t *testing.T) {
 	if err := os.WriteFile(bin, []byte(fakeRenovateOK), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := RunRenovate(context.Background(), dir, bin)
+	got, err := RunRenovate(context.Background(), dir, "acme/repo", bin)
 	if err != nil {
 		t.Fatalf("run renovate: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestRunRenovateNonZeroExitStillParsesReport(t *testing.T) {
 	if err := os.WriteFile(bin, []byte(fakeRenovateExit1), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := RunRenovate(context.Background(), dir, bin)
+	got, err := RunRenovate(context.Background(), dir, "acme/repo", bin)
 	if err != nil {
 		t.Fatalf("run renovate: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRunRenovateMissingReport(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RunRenovate(context.Background(), dir, bin); err == nil {
+	if _, err := RunRenovate(context.Background(), dir, "acme/repo", bin); err == nil {
 		t.Fatal("expected error when no report file is written")
 	}
 }
