@@ -51,7 +51,7 @@ type Pipeline struct {
 
 // Run executes the upgrade orchestration and returns the GitHub ref (e.g.
 // "owner/repo#123") on success. It marks the run running/failed/succeeded.
-func (p *Pipeline) Run(ctx context.Context, runID, topic string) (string, error) {
+func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	run, err := p.Store.RunByID(ctx, runID)
 	if err != nil {
 		return "", fmt.Errorf("load run: %w", err)
@@ -76,6 +76,7 @@ func (p *Pipeline) Run(ctx context.Context, runID, topic string) (string, error)
 		return "", err
 	}
 
+	topic := "upgrade-" + m.Package + "-" + m.To
 	branch := "bot/" + runID + "-" + topic
 	sb, err := p.Sandbox(ctx, g.Repo.Owner+"/"+g.Repo.Name, branch, g.Scope.BaseRef)
 	if err != nil {
