@@ -149,6 +149,50 @@ func TestUpsertFindingsIdempotent(t *testing.T) {
 	}
 }
 
+func TestUpsertUpdatesIdempotent(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-1")
+
+	u1 := scan.Update{RepoID: "shambu2k/repo", Ecosystem: "npm", Package: "express",
+		CurrentVersion: "4.17.0", TargetVersion: "4.19.0", UpdateType: "minor"}
+	u2 := scan.Update{RepoID: "shambu2k/repo", Ecosystem: "npm", Package: "tar",
+		CurrentVersion: "7.5.16", TargetVersion: "7.5.19", UpdateType: "patch"}
+
+	if err := st.UpsertUpdates(ctx, "run-1", []scan.Update{u1, u2}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if got := countUpdates(t, st); got != 2 {
+		t.Fatalf("after first upsert: want 2, got %d", got)
+	}
+
+	// same package, refreshed target -> updated in place, not duplicated
+	u1.TargetVersion = "4.20.0"
+	if err := st.UpsertUpdates(ctx, "run-1", []scan.Update{u1}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if got := countUpdates(t, st); got != 2 {
+		t.Fatalf("re-upsert must not duplicate: want 2, got %d", got)
+	}
+	var tv string
+	if err := st.pool.QueryRow(ctx,
+		`SELECT target_version FROM updates WHERE repo_id='shambu2k/repo' AND package='express'`).Scan(&tv); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if tv != "4.20.0" {
+		t.Fatalf("existing row not refreshed: got %q", tv)
+	}
+}
+
+func countUpdates(t *testing.T, st *Postgres) int {
+	t.Helper()
+	var n int
+	if err := st.pool.QueryRow(context.Background(), `SELECT count(*) FROM updates`).Scan(&n); err != nil {
+		t.Fatalf("count updates: %v", err)
+	}
+	return n
+}
+
 // insertRun seeds a parent runs row so intents (which FK to runs) can be
 // recorded — the real dispatch flow always inserts the run first.
 func insertRun(t *testing.T, st *Postgres, id string) {

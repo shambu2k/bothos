@@ -25,6 +25,17 @@ type Finding struct {
 	AdvisoryID     string // OSV-/GHSA-/CVE-/GO- ID
 }
 
+// Update is one available upgrade resolved by Renovate dry-run: package's
+// current version has a resolvable target version (the "available-update set").
+type Update struct {
+	RepoID         string
+	Ecosystem      string // '' when not inferable (kept a string, never NULL, so the upsert key works)
+	Package        string
+	CurrentVersion string
+	TargetVersion  string
+	UpdateType     string // patch | minor | major | pin | digest
+}
+
 // fixedVersionFromRanges extracts the last "fixed" event from OSV-style
 // affected[].ranges[].events[], returning "" when there is none. A fixed
 // version is what makes a finding actionable, so extracting it correctly is
