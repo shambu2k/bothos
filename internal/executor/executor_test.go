@@ -80,9 +80,18 @@ type fakeWriter struct {
 	postRev   func(ctx context.Context, cred Credential, spec PostReviewWrite) (string, error)
 	postCmnt  func(ctx context.Context, cred Credential, spec PostCommentWrite) (string, error)
 	setLabels func(ctx context.Context, cred Credential, spec SetLabelsWrite) (string, error)
+	push      func(ctx context.Context, cred Credential, branch, worktree string) error
 
 	lastOpenPR *OpenPRWrite
 	callCount  int
+}
+
+func (f *fakeWriter) PushBranch(ctx context.Context, c Credential, branch, worktree string) error {
+	f.callCount++
+	if f.push != nil {
+		return f.push(ctx, c, branch, worktree)
+	}
+	return nil
 }
 
 func (f *fakeWriter) OpenPR(ctx context.Context, c Credential, s OpenPRWrite) (string, error) {

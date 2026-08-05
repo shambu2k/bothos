@@ -93,6 +93,10 @@ type GitHubWriter interface {
 	PostReview(ctx context.Context, cred Credential, spec PostReviewWrite) (ref string, err error)
 	PostComment(ctx context.Context, cred Credential, spec PostCommentWrite) (ref string, err error)
 	SetLabels(ctx context.Context, cred Credential, spec SetLabelsWrite) (ref string, err error)
+	// PushBranch pushes a locally-committed work branch (in worktree) to the
+	// remote under the credential. Only the executor calls this — it is the
+	// single writer.
+	PushBranch(ctx context.Context, cred Credential, branch, worktree string) error
 }
 
 type Result struct {
@@ -144,8 +148,12 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 		if err := e.checkWorktreeDiff(ctx, g, v.Worktree); err != nil {
 			return Result{}, err
 		}
+		branch := "bot/" + g.RunID + "-" + v.Topic
+		if err := e.gh.PushBranch(ctx, cred, branch, v.Worktree); err != nil {
+			return Result{}, fmt.Errorf("push branch: %w", err)
+		}
 		ref, err = e.gh.OpenPR(ctx, cred, OpenPRWrite{
-			Branch: "bot/" + g.RunID + "-" + v.Topic,
+			Branch: branch,
 			Base:   g.Scope.BaseRef,
 			Title:  v.Title,
 			Body:   v.Body,

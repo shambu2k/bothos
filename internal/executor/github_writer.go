@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os/exec"
 
 	"github.com/google/go-github/v69/github"
 	"github.com/shambu2k/bothos/internal/intent"
@@ -30,6 +31,19 @@ func NewGitHubWriter(newClient func(token string) *github.Client) GitHubWriter {
 
 func (w *githubWriter) ref(cred Credential, number int) string {
 	return fmt.Sprintf("%s/%s#%d", cred.Repo.Owner, cred.Repo.Name, number)
+}
+
+// PushBranch pushes a locally-committed branch (in worktree) to the remote using
+// the executable's git + the credential's PAT. It is the executor's push step:
+// the worker commits locally, this pushes, then OpenPR targets the branch.
+func (w *githubWriter) PushBranch(ctx context.Context, cred Credential, branch, worktree string) error {
+	url := fmt.Sprintf("https://x-access-token:%s@github.com/%s/%s.git",
+		cred.Token, cred.Repo.Owner, cred.Repo.Name)
+	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "push", url, branch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("push %s: %w: %s", branch, err, out)
+	}
+	return nil
 }
 
 func (w *githubWriter) OpenPR(ctx context.Context, cred Credential, spec OpenPRWrite) (string, error) {
