@@ -63,7 +63,7 @@ func TestPipelineHappyPath(t *testing.T) {
 		Commit:  func(ctx context.Context, w, b string) error { return nil },
 	}
 
-	ref, err := p.Run(context.Background(), "r1", "upgrade-adm-zip-0.6.0")
+	ref, err := p.Run(context.Background(), "r1")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestPipelineFailsWithoutIntent(t *testing.T) {
 		Exec:    fakeExec{},
 		Sandbox: func(ctx context.Context, r, b, base string) (runtime.Sandbox, error) { return fakeSandbox{"/tmp/x"}, nil },
 	}
-	if _, err := p.Run(context.Background(), "r2", "topic"); err == nil {
+	if _, err := p.Run(context.Background(), "r2"); err == nil {
 		t.Fatal("expected error when no open_pr intent is produced")
 	}
 	if st.last != ledger.RunFailed {
