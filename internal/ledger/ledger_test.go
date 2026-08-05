@@ -184,6 +184,40 @@ func TestUpsertUpdatesIdempotent(t *testing.T) {
 	}
 }
 
+func TestActionableCandidates(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-1")
+
+	// finding WITH a fix -> should be a candidate
+	if err := st.UpsertFindings(ctx, "run-1", []scan.Finding{{Scanner: scan.ScannerOSV, RepoID: "r",
+		Package: "express", CurrentVersion: "4.17.0", TargetVersion: "4.19.0", Severity: "HIGH", AdvisoryID: "GHSA-x"}}); err != nil {
+		t.Fatalf("finding1: %v", err)
+	}
+	// finding WITHOUT a fix -> NOT a candidate
+	if err := st.UpsertFindings(ctx, "run-1", []scan.Finding{{Scanner: scan.ScannerOSV, RepoID: "r",
+		Package: "tar", CurrentVersion: "7.5.16", TargetVersion: "", Severity: "CRITICAL", AdvisoryID: "GHSA-y"}}); err != nil {
+		t.Fatalf("finding2: %v", err)
+	}
+	// available update only for express
+	if err := st.UpsertUpdates(ctx, "run-1", []scan.Update{{RepoID: "r", Package: "express",
+		CurrentVersion: "4.17.0", TargetVersion: "4.19.0", UpdateType: "minor"}}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	cands, err := st.ActionableCandidates(ctx, "r")
+	if err != nil {
+		t.Fatalf("candidates: %v", err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("want exactly 1 candidate (express), got %d: %+v", len(cands), cands)
+	}
+	c := cands[0]
+	if c.Package != "express" || c.AdvisoryID != "GHSA-x" || c.UpdateType != "minor" {
+		t.Fatalf("unexpected candidate: %+v", c)
+	}
+}
+
 func countUpdates(t *testing.T, st *Postgres) int {
 	t.Helper()
 	var n int
