@@ -83,7 +83,7 @@ func TestRunScanIncludesRenovate(t *testing.T) {
 
 	fakeClone := func(ctx context.Context, dir, repo string) error { return nil }
 	// fake renovate returns a resolvable update
-	fakeRenovate := func(ctx context.Context, dir string) ([]scan.Update, error) {
+	fakeRenovate := func(ctx context.Context, repo, dir string) ([]scan.Update, error) {
 		return []scan.Update{{Ecosystem: "npm", Package: "express", CurrentVersion: "4.17.0", TargetVersion: "4.19.0", UpdateType: "minor"}}, nil
 	}
 

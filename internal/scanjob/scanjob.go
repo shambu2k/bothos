@@ -20,10 +20,9 @@ type Config struct {
 	// Tools are the scanners to run against the cloned tree. Defaults to
 	// scan.StandardTools().
 	Tools []scan.Tool
-	// Renovate dry-runs against the cloned tree and returns the available-update
-	// set. Nil defaults to scan.RunRenovate (the real cli). A nil Renovate that
-	// is skipped — pass a no-op to disable.
-	Renovate func(ctx context.Context, dir string) ([]scan.Update, error)
+	// Renovate dry-runs against the repo and returns the available-update set.
+	// Nil disables the Renovate step; pass scanjob.RealRenovate to enable it.
+	Renovate func(ctx context.Context, repo, dir string) ([]scan.Update, error)
 }
 
 // Upserter persists findings and updates to the ledger.
@@ -69,7 +68,7 @@ func Run(ctx context.Context, cfg Config, store Upserter, repo, runID string) (n
 	nFindings = len(findings)
 
 	if cfg.Renovate != nil {
-		updates, err := cfg.Renovate(ctx, dir)
+		updates, err := cfg.Renovate(ctx, repo, dir)
 		if err != nil {
 			return nFindings, 0, fmt.Errorf("renovate dry-run: %w", err)
 		}
@@ -84,9 +83,9 @@ func Run(ctx context.Context, cfg Config, store Upserter, repo, runID string) (n
 	return nFindings, nUpdates, nil
 }
 
-// RealRenovate returns a Renovate run using the real `renovate` CLI.
-func RealRenovate(ctx context.Context, dir string) ([]scan.Update, error) {
-	return scan.RunRenovate(ctx, dir, "renovate")
+// RealRenovate dry-runs Renovate against the repo using the real `renovate` CLI.
+func RealRenovate(ctx context.Context, repo, dir string) ([]scan.Update, error) {
+	return scan.RunRenovate(ctx, dir, repo, "renovate")
 }
 
 // ShallowClone fetches repo (owner/name) with --depth 1 so periodic scans do

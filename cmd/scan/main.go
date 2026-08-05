@@ -44,7 +44,9 @@ func main() {
 		log.Fatalf("insert run: %v", err)
 	}
 
-	n, err := scanjob.Run(ctx, scanjob.Config{}, l, *repo, runID)
+	// Renovate dry-run is deferred (target repos lack a renovate.json), so the
+	// scanner's fixed versions are the available-update set today.
+	nFindings, nUpdates, err := scanjob.Run(ctx, scanjob.Config{}, l, *repo, runID)
 	if err != nil {
 		_ = l.SetRunStatus(ctx, runID, ledger.RunFailed)
 		log.Fatalf("scan %s: %v", *repo, err)
@@ -52,7 +54,12 @@ func main() {
 	if err := l.SetRunStatus(ctx, runID, ledger.RunSucceeded); err != nil {
 		log.Fatalf("status: %v", err)
 	}
-	log.Printf("scan %s: %d findings (run %s)", *repo, n, runID)
+	cands, cerr := l.ActionableCandidates(ctx, *repo)
+	if cerr != nil {
+		log.Printf("candidates: %v", cerr)
+	}
+	log.Printf("scan %s: %d findings, %d updates, %d actionable candidates (run %s)",
+		*repo, nFindings, nUpdates, len(cands), runID)
 }
 
 func newID() string {
