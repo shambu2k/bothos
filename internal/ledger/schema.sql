@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS findings (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_findings_repo ON findings(repo_id);
+-- A finding is identified by which vulnerability was found where; the upsert
+-- key lets periodic scans refresh in place instead of duplicating rows.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_dedup ON findings(repo_id, scanner, package, advisory_id);
 
 -- graph_cache: prebuilt codebase graphs keyed by the deterministic hash
 -- (see internal/graphcache); a derived artifact, evictable by definition.

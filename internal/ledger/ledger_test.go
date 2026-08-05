@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/shambu2k/bothos/internal/intent"
+	"github.com/shambu2k/bothos/internal/scan"
 	"github.com/shambu2k/bothos/internal/testdb"
 )
 
@@ -110,6 +111,41 @@ func TestRecordCapabilityGap(t *testing.T) {
 	st.InsertRun(ctx, Run{ID: "run-1", RepoID: "r", Trigger: "scheduled", ScopeKind: "scheduled", Grant: []byte("{}"), Decision: "allow", Status: RunQueued})
 	if err := st.RecordCapabilityGap(ctx, "run-1", "KindNuke", "agent tried a verb outside the set"); err != nil {
 		t.Fatalf("record gap: %v", err)
+	}
+}
+
+func TestUpsertFindingsIdempotent(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-1")
+	insertRun(t, st, "run-2")
+
+	f1 := scan.Finding{Scanner: scan.ScannerOSV, Ecosystem: "npm", Package: "leftpad",
+		CurrentVersion: "0.0.1", TargetVersion: "0.0.2", Severity: "HIGH", AdvisoryID: "GHSA-abc", RepoID: "shambu2k/repo"}
+	f2 := scan.Finding{Scanner: scan.ScannerOSV, Ecosystem: "Go", Package: "golang.org/x/net",
+		CurrentVersion: "v0.20.0", TargetVersion: "v0.32.0", AdvisoryID: "GO-2024-1", RepoID: "shambu2k/repo"}
+
+	if err := st.UpsertFindings(ctx, "run-1", []scan.Finding{f1, f2}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := st.Findings(ctx, "shambu2k/repo")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("after first upsert: len=%d err=%v", len(got), err)
+	}
+
+	// same finding, refreshed version -> same row updated, not duplicated
+	f1.TargetVersion = "0.0.3"
+	if err := st.UpsertFindings(ctx, "run-2", []scan.Finding{f1}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	got, err = st.Findings(ctx, "shambu2k/repo")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("after re-upsert: len=%d err=%v (must not duplicate)", len(got), err)
+	}
+	for _, g := range got {
+		if g.AdvisoryID == "GHSA-abc" && g.TargetVersion != "0.0.3" {
+			t.Fatalf("existing row not updated in place: %+v", g)
+		}
 	}
 }
 

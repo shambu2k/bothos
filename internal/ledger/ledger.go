@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shambu2k/bothos/internal/scan"
 )
 
 //go:embed schema.sql
@@ -133,4 +134,64 @@ func (p *Postgres) RecordCapabilityGap(ctx context.Context, runID, requestedKind
 		`INSERT INTO capability_gaps(run_id, requested_kind, context) VALUES ($1,$2,NULLIF($3,''))`,
 		runID, requestedKind, context_)
 	return err
+}
+
+// ---------- findings ----------
+
+// UpsertFindings inserts or refreshes findings in place, keyed by
+// (repo_id, scanner, package, advisory_id), so repeated scans never duplicate
+// a row. runID links the scan that produced them.
+func (p *Postgres) UpsertFindings(ctx context.Context, runID string, findings []scan.Finding) error {
+	if len(findings) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, f := range findings {
+		batch.Queue(`
+			INSERT INTO findings(repo_id, scanner, ecosystem, package, current_version,
+			                     target_version, severity, advisory_id, status, run_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9)
+			ON CONFLICT (repo_id, scanner, package, advisory_id)
+			DO UPDATE SET ecosystem=EXCLUDED.ecosystem,
+			              current_version=EXCLUDED.current_version,
+			              target_version=EXCLUDED.target_version,
+			              severity=EXCLUDED.severity,
+			              status='open',
+			              run_id=EXCLUDED.run_id`,
+			f.RepoID, string(f.Scanner), f.Ecosystem, f.Package,
+			f.CurrentVersion, f.TargetVersion, f.Severity, f.AdvisoryID, runID)
+	}
+	br := p.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for range findings {
+		if _, err := br.Exec(); err != nil {
+			return err
+		}
+	}
+	return br.Close()
+}
+
+// Findings returns a repo's current findings for manual-audit comparison
+// against a scan run.
+func (p *Postgres) Findings(ctx context.Context, repoID string) ([]scan.Finding, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT repo_id, scanner, ecosystem, package, current_version,
+		       target_version, severity, advisory_id
+		FROM findings WHERE repo_id=$1 ORDER BY severity DESC NULLS LAST, package`, repoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []scan.Finding
+	for rows.Next() {
+		var f scan.Finding
+		var sc string
+		if err := rows.Scan(&f.RepoID, &sc, &f.Ecosystem, &f.Package,
+			&f.CurrentVersion, &f.TargetVersion, &f.Severity, &f.AdvisoryID); err != nil {
+			return nil, err
+		}
+		f.Scanner = scan.Scanner(sc)
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
