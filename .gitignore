@@ -17,6 +17,10 @@ build/
 # OS
 .DS_Store
 
+# Node (PI adapter deps)
+node_modules/
+adapter/pi/node_modules/
+
 # Local secrets — never commit credentials
 .env
 .env.*

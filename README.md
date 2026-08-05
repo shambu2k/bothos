@@ -25,28 +25,44 @@ this land* field from an immutable dispatch-time Grant. See
 | `internal/intent` | Content-only intent schema + validation kernel (safe by construction) |
 | `internal/executor` | Sole holder of PATs; resolves intents against GitHub (logic + go-github adapter) |
 | `internal/policy` | Dispatch-time grants as data — the immutable capability surface per run |
-| `internal/runtime` | `AgentRuntime` seam + injection-aware structured upgrade prompt |
+| `internal/runtime` | `AgentRuntime` seam + named runtime registry + structured upgrade prompt |
 | `internal/graphcache` | Deterministic graph cache keying + retention (`sha256(tool‖cfg‖tree)`) |
-| *(planned)* `internal/ledger` | `runs`/`findings` Postgres spine |
-| *(planned)* `internal/queue` | River-backed transactional queue + periodic jobs |
-| *(planned)* `cmd/gateway` | Webhook receiver (sig validation, ack-fast, dispatch) |
-| *(planned)* `cmd/worker` | Run orchestration: sandbox → runtime → executor |
-| *(planned)* `cmd/executor` | Executor container entrypoint |
+| `internal/ledger` | `runs`/`findings`/`updates` Postgres spine + actionable candidates |
+| `internal/queue` | River-backed transactional queue + periodic jobs |
+| `internal/scan` / `internal/scanjob` | Deterministic scanners (osv-scanner) → findings |
+| `internal/agent` | Language-agnostic sidecar protocol + PI runtime (Node subprocess) |
+| `internal/upgrade` | Candidate→task, grant, scheduler, git diff source |
+| `internal/runpipe` | Worker orchestration: sandbox → runtime → executor |
+| `internal/credstore` | Executor-only write-PAT resolution |
+| `cmd/gateway` | Webhook receiver (sig validation, ack-fast, dispatch) |
+| `cmd/worker` | Run orchestration: sandbox → PI runtime → executor |
+| `cmd/scan` | CLI: once-per-repo deterministic scan + candidates |
+| `cmd/upgrade` | CLI: schedule upgrade runs from candidates |
 
 ## Phases
 
 Progress is tracked per the plan's phases. Each phase ships, is tested (TDD),
 and is committed before the next starts.
 
-- [ ] Phase 0 — spine (webhook + River + Postgres), no LLM
-- [ ] Phase 1 — deterministic scans (osv-scanner / trivy / renovate dry-run)
+- [x] Phase 0 — spine (webhook + River + Postgres), no LLM
+- [x] Phase 1 — deterministic scans (osv-scanner) → findings → actionable candidates
 - [x] Phase 2 core — intent schema + validation kernel
 - [x] Phase 2 core — executor (logic + go-github adapter, idempotent, PAT-only-held-here)
-- [x] Phase 2 core — policy (dispatch-time grants) + runtime seam + graph cache
-- [ ] Phase 2 — worker orchestration + real sandbox bound in, 10 upgrade PRs exit
+- [x] Phase 2 core — policy (dispatch-time grants) + runtime seam + registry + graph cache
+- [ ] Phase 2 — LLM upgrade PR pipeline (machinery built: PI runtime, adapter, scheduler, worker wiring; live PR awaits write PAT + OpenRouter key)
 - [ ] Phase 3 — PR review (read-only, fork-safe)
 - [ ] Phase 4 — labeled issues (actor allowlist in policy ✅, worker wiring)
 - [ ] Phase 5 — doc linting (taxonomy → redundancy → contradiction)
+
+## Phase 2 upgrade pipeline
+
+Deterministic scan candidates become draft upgrade PRs: the LLM agent (PI, via
+OpenRouter) bumps the dependency + migrates code in a work branch off the
+default, runs tests, and the executor pushes + opens a **draft** PR. Web search
+is an optional aid (`SEARCH_API_KEY`); without it the agent works from pure LLM
+reasoning. Secrets live in gitignored `deploy/.env` (see `.env.example`) and
+only the executor resolves a write PAT. Branch/PR base = repo default branch;
+draft-by-default + diff/path validation + human review are the safety net.
 
 ## Develop
 

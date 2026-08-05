@@ -42,6 +42,11 @@ services:
     environment:
       DATABASE_URL: postgres://maintbot:${POSTGRES_PASSWORD:-maintbot-dev}@postgres:5432/maintbot
       GITHUB_READ_TOKEN: ${GITHUB_READ_TOKEN:-}   # readonly PAT for scanning private repos
+      GITHUB_WRITE_TOKEN: ${GITHUB_WRITE_TOKEN:-} # write PAT (executor only)
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      PI_MODEL: ${PI_MODEL:-openrouter/deepseek/deepseek-v4-flash-0731}
+      SEARCH_API_KEY: ${SEARCH_API_KEY:-}         # optional; absent = pure-LLM
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-tavily}
     depends_on:
       postgres:
         condition: service_healthy
