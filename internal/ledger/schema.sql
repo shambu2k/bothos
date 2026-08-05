@@ -20,10 +20,13 @@ CREATE TABLE IF NOT EXISTS runs (
     tokens_out     INTEGER,
     cost_usd       NUMERIC,
     failure_reason TEXT,
+    meta           JSONB NOT NULL DEFAULT '{}', -- run-type inputs: upgrade {pkg,from,to,advisory} or scan payload
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     started_at     TIMESTAMPTZ,
     ended_at       TIMESTAMPTZ
 );
+-- idempotent column additions for tables that may pre-date this schema
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{}';
 
 -- intents: content-only agent output, resolved by the executor. The derived
 -- idempotency key is unique so a River retry / GitHub redelivery cannot open
