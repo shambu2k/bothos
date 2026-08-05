@@ -171,6 +171,37 @@ func (p *Postgres) UpsertFindings(ctx context.Context, runID string, findings []
 	return br.Close()
 }
 
+// UpsertUpdates inserts or refreshes the Renovate available-update set in
+// place, keyed on (repo_id, ecosystem, package), so repeated dry-runs never
+// duplicate a row. runID links the scan that produced it.
+func (p *Postgres) UpsertUpdates(ctx context.Context, runID string, ups []scan.Update) error {
+	if len(ups) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, u := range ups {
+		batch.Queue(`
+			INSERT INTO updates(repo_id, ecosystem, package, current_version,
+			                   target_version, update_type, run_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)
+			ON CONFLICT (repo_id, ecosystem, package)
+			DO UPDATE SET current_version=EXCLUDED.current_version,
+			              target_version=EXCLUDED.target_version,
+			              update_type=EXCLUDED.update_type,
+			              run_id=EXCLUDED.run_id`,
+			u.RepoID, u.Ecosystem, u.Package, u.CurrentVersion,
+			u.TargetVersion, u.UpdateType, runID)
+	}
+	br := p.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for range ups {
+		if _, err := br.Exec(); err != nil {
+			return err
+		}
+	}
+	return br.Close()
+}
+
 // Findings returns a repo's current findings for manual-audit comparison
 // against a scan run.
 func (p *Postgres) Findings(ctx context.Context, repoID string) ([]scan.Finding, error) {

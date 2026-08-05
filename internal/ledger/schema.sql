@@ -58,6 +58,23 @@ CREATE INDEX IF NOT EXISTS idx_findings_repo ON findings(repo_id);
 -- key lets periodic scans refresh in place instead of duplicating rows.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_dedup ON findings(repo_id, scanner, package, advisory_id);
 
+-- updates: the Renovate dry-run "available-update set." One row per upgrade
+-- Renovate resolves (current -> target). Joined against findings to surface
+-- actionable upgrade candidates (a fix that is actually installable).
+CREATE TABLE IF NOT EXISTS updates (
+    id              BIGSERIAL PRIMARY KEY,
+    repo_id         TEXT NOT NULL,
+    ecosystem       TEXT,
+    package         TEXT NOT NULL,
+    current_version TEXT,
+    target_version  TEXT,
+    update_type     TEXT,   -- patch | minor | major | pin | digest
+    run_id          TEXT REFERENCES runs(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_updates_repo ON updates(repo_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_updates_dedup ON updates(repo_id, ecosystem, package);
+
 -- graph_cache: prebuilt codebase graphs keyed by the deterministic hash
 -- (see internal/graphcache); a derived artifact, evictable by definition.
 CREATE TABLE IF NOT EXISTS graph_cache (
