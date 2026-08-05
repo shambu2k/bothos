@@ -93,6 +93,7 @@ type Run struct {
 	Decision    string // allow | deny
 	DenyReason  string
 	Status      RunStatus
+	Meta        []byte // run-type inputs (e.g. upgrade {pkg,from,to,advisory})
 }
 
 // InsertRun records a run at dispatch time. Every webhook lands here with its
@@ -113,10 +114,25 @@ type execer interface {
 
 func (p *Postgres) insertRun(ctx context.Context, ex execer, r Run) error {
 	_, err := ex.Exec(ctx, `
-		INSERT INTO runs(id, repo_id, trigger, scope_kind, scope_number, "grant", decision, deny_reason, status)
-		VALUES ($1,$2,$3,$4,NULLIF($5,0),$6,$7,NULLIF($8,''),$9)`,
-		r.ID, r.RepoID, r.Trigger, r.ScopeKind, r.ScopeNumber, r.Grant, r.Decision, r.DenyReason, r.Status)
+		INSERT INTO runs(id, repo_id, trigger, scope_kind, scope_number, "grant", decision, deny_reason, status, meta)
+		VALUES ($1,$2,$3,$4,NULLIF($5,0),$6,$7,NULLIF($8,''),$9,COALESCE($10,'{}'::jsonb))`,
+		r.ID, r.RepoID, r.Trigger, r.ScopeKind, r.ScopeNumber, r.Grant, r.Decision, r.DenyReason, r.Status, r.Meta)
 	return err
+}
+
+// RunByID returns a run with its grant and meta, for the worker to act on.
+func (p *Postgres) RunByID(ctx context.Context, id string) (Run, error) {
+	var r Run
+	err := p.pool.QueryRow(ctx, `
+		SELECT id, repo_id, trigger, scope_kind, scope_number, "grant",
+		       decision, deny_reason, status, COALESCE(meta,'{}'::jsonb)
+		FROM runs WHERE id=$1`, id).Scan(
+		&r.ID, &r.RepoID, &r.Trigger, &r.ScopeKind, &r.ScopeNumber, &r.Grant,
+		&r.Decision, &r.DenyReason, &r.Status, &r.Meta)
+	if err != nil {
+		return Run{}, err
+	}
+	return r, nil
 }
 
 // SetRunStatus transitions a run; a terminal call also stamps ended_at.
