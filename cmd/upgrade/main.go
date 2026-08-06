@@ -43,6 +43,9 @@ func main() {
 		log.Fatalf("ledger: %v", err)
 	}
 	defer l.Close()
+	if err := l.Migrate(ctx); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
 	q, err := queue.Open(ctx, *dsn, nil, nil)
 	if err != nil {
 		log.Fatalf("queue: %v", err)

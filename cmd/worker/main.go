@@ -13,11 +13,15 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/riverqueue/river"
+	// Blank import registers the "pi" runtime (agent.init) — without it
+	// runtime.New("pi", ...) fails on every upgrade run.
+	_ "github.com/shambu2k/bothos/internal/agent"
 	"github.com/shambu2k/bothos/internal/credstore"
 	"github.com/shambu2k/bothos/internal/executor"
 	"github.com/shambu2k/bothos/internal/intent"
@@ -33,7 +37,8 @@ func main() {
 	var (
 		dsn       = flag.String("dsn", envOr("DATABASE_URL", ""), "Postgres DSN")
 		queueName = flag.String("queue", "default", "river queue to consume")
-		piAdapter = flag.String("pi-adapter", envOr("PI_ADAPTER", "/usr/local/bin/bothos-pi-adapter"), "path to the PI node adapter")
+		piAdapter = flag.String("pi-adapter", envOr("PI_ADAPTER", "/opt/bothos/pi/adapter.mjs"), "path to the PI node adapter .mjs (run via node)")
+		concurrency = flag.Int("concurrency", envIntOr("WORKER_CONCURRENCY", 2), "upgrade runs to process in parallel (each JIVA run is a heavy npm install)")
 	)
 	flag.Parse()
 	if *dsn == "" {
@@ -48,6 +53,9 @@ func main() {
 		log.Fatalf("ledger: %v", err)
 	}
 	defer l.Close()
+	if err := l.Migrate(ctx); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
 
 	credStore := credstore.NewEnv(os.Getenv)
 	gh := executor.NewGitHubWriter(nil)
@@ -55,6 +63,7 @@ func main() {
 	var handler queue.RunHandler = func(ctx context.Context, runID string) error {
 		run, err := l.RunByID(ctx, runID)
 		if err != nil {
+			log.Printf("run %s: load: %v", runID, err)
 			return err
 		}
 		if run.Trigger != "upgrade" {
@@ -64,11 +73,13 @@ func main() {
 
 		var g intent.Grant
 		if err := json.Unmarshal(run.Grant, &g); err != nil {
+			log.Printf("run %s: grant: %v", runID, err)
 			return failRun(ctx, l, runID, err)
 		}
 
 		agent, err := runtime.New("pi", ctx, map[string]any{"adapter": *piAdapter})
 		if err != nil {
+			log.Printf("run %s: new pi runtime: %v", runID, err)
 			return failRun(ctx, l, runID, err)
 		}
 
@@ -81,13 +92,14 @@ func main() {
 			Commit:  commitWorktree,
 		}
 		if _, err := pipeline.Run(ctx, runID); err != nil {
+			log.Printf("run %s: pipeline: %v", runID, err)
 			return failRun(ctx, l, runID, err)
 		}
 		return nil
 	}
 
 	q, err := queue.Open(ctx, *dsn, map[string]river.QueueConfig{
-		*queueName: {MaxWorkers: 4},
+		*queueName: {MaxWorkers: *concurrency},
 	}, handler)
 	if err != nil {
 		log.Fatalf("queue: %v", err)
@@ -184,6 +196,16 @@ func failRun(ctx context.Context, l *ledger.Postgres, runID string, cause error)
 func envOr(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return def
+}
+
+// envIntOr returns the int value of env var k, or def if unset/invalid.
+func envIntOr(k string, def int) int {
+	if s := os.Getenv(k); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			return v
+		}
 	}
 	return def
 }
