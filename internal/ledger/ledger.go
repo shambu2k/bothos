@@ -124,8 +124,8 @@ func (p *Postgres) insertRun(ctx context.Context, ex execer, r Run) error {
 func (p *Postgres) RunByID(ctx context.Context, id string) (Run, error) {
 	var r Run
 	err := p.pool.QueryRow(ctx, `
-		SELECT id, repo_id, trigger, scope_kind, scope_number, "grant",
-		       decision, deny_reason, status, COALESCE(meta,'{}'::jsonb)
+		SELECT id, repo_id, trigger, scope_kind, COALESCE(scope_number,0), "grant",
+		       decision, COALESCE(deny_reason,''), status, COALESCE(meta,'{}'::jsonb)
 		FROM runs WHERE id=$1`, id).Scan(
 		&r.ID, &r.RepoID, &r.Trigger, &r.ScopeKind, &r.ScopeNumber, &r.Grant,
 		&r.Decision, &r.DenyReason, &r.Status, &r.Meta)
