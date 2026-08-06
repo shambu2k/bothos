@@ -13,14 +13,22 @@
 // deterministically (the agent never picks a branch or hands over a patch).
 
 import { readFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { stdout } from "node:process";
 import {
   createAgentSession,
   SessionManager,
-  createCodingTools,
+  ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-flash-0731";
+
+// NOTE: custom tools are intentionally NOT registered yet. The SDK's tool API
+// wants TypeBox schemas in customTools: ToolDefinition[] and a string allowlist
+// in `tools`. We rely on PI's default built-in tools (read/bash/edit/write),
+// which is exactly what the agent needs to edit the worktree — and it keeps
+// pure-LLM mode working (SEARCH_API_KEY is unset). A web_search custom tool can
+// be re-added behind SEARCH_API_KEY once wired to the TypeBox schema correctly.
 
 function emit(event) {
   stdout.write(`${JSON.stringify(event)}\n`);
@@ -47,10 +55,11 @@ function buildPrompt(task) {
     p += `\n`;
   }
 
-  p += `Your job: migrate the code so it works with ${task.TargetVersion}.\n`;
+  p += `Your job: upgrade ${task.Package} from ${task.CurrentVersion} to ${task.TargetVersion}.\n`;
+  p += `Bump the version in EVERY place it is pinned: the manifest (e.g. package.json / go.mod / requirements.txt) AND the lockfile (e.g. package-lock.json). Prefer the package manager to update the lockfile for you, e.g. \`npm install ${task.Package}@${task.TargetVersion}\` or \`go get ${task.Package}@v${task.TargetVersion}\`, and remove/accept any resulting diffs. If a version appears in more than one file, update them all consistently.\n`;
   if (task.TestCommand) p += `Test command: ${task.TestCommand}\n`;
   p += `You may use the web_search tool if it is available to check the target version's changelog/release notes for breaking changes or required migrations. You are NOT required to — if no search tool is available, complete the upgrade using your knowledge of the package and the repository. Do not refuse to work without search.\n`;
-  p += `Make your changes directly in the working directory. Run the test command. Only finish successfully if the tests pass.\n`;
+  p += `Make your changes directly in the working directory. Install dependencies if needed, then run the test command. Only finish successfully if the tests pass.\n`;
   return p;
 }
 
@@ -83,27 +92,33 @@ async function searchWeb(query, provider, key) {
 async function main() {
   const request = JSON.parse(readFileSync(0, "utf8"));
 
-  const tools = createCodingTools(); // read/bash/edit/write/grep/find/ls
-  const searchKey = process.env.SEARCH_API_KEY;
-  if (searchKey) {
-    tools.push({
-      name: "web_search",
-      description:
-        "Search the web for a published package/version's changelog, release notes, and migration guides. Use it to find any breaking changes or required code migrations.",
-      parameters: {
-        type: "object",
-        properties: { query: { type: "string", description: "search query" } },
-        required: ["query"],
-      },
-      execute: (args) =>
-        searchWeb(args.query, process.env.SEARCH_PROVIDER || "tavily", searchKey),
-    });
+  // Use PI's default built-in tools (read/bash/edit/write); no custom tool is
+  // registered (see note at top). The agent edits the worktree directly.
+
+  // Resolve the runtime + model. The model option of createAgentSession is a
+  // Model object, not a string id, so we build a ModelRuntime, inject the
+  // OpenRouter key, refresh the catalog, and select the model.
+  const modelRuntime = await ModelRuntime.create({ allowModelNetwork: true });
+  if (process.env.OPENROUTER_API_KEY) {
+    await modelRuntime.setRuntimeApiKey("openrouter", process.env.OPENROUTER_API_KEY);
+  }
+
+  const desired = process.env.PI_MODEL || DEFAULT_MODEL;
+  const [provider, ...rest] = desired.split("/");
+  const modelId = rest.join("/");
+  const models = await modelRuntime.getAvailable(provider);
+  const model =
+    models.find((m) => m.id === desired) ||
+    models.find((m) => m.provider === provider && m.id === modelId);
+  if (!model) {
+    const ids = models.map((m) => m.id).slice(0, 20).join(", ");
+    throw new Error(`model ${desired} not found under provider "${provider}". Available: ${ids}`);
   }
 
   const { session } = await createAgentSession({
-    cwd: request.Worktree,
-    model: process.env.PI_MODEL || DEFAULT_MODEL,
-    tools,
+    cwd: request.worktree,
+    model,
+    modelRuntime,
     sessionManager: SessionManager.inMemory(),
   });
 
@@ -113,20 +128,33 @@ async function main() {
     }
   });
 
-  await session.prompt(buildPrompt(request.Task));
+  await session.prompt(buildPrompt(request.task));
+
+  // Gate: only emit an open_pr intent if the agent actually changed the
+  // worktree. A run that produced no diff is a failure, not a silent success.
+  let changed = false;
+  try {
+    execSync("git diff --quiet --exit-code", { cwd: request.worktree });
+  } catch {
+    changed = true; // non-zero exit => working tree differs from HEAD
+  }
+  if (!changed) {
+    emit({ type: "error", msg: "agent made no changes to the worktree" });
+    process.exit(1);
+  }
 
   emit({
     type: "intent",
     intent: {
       schema_version: 1,
-      run_id: request.RunID,
+      run_id: request.run_id,
       kind: "open_pr",
       payload: {
-        title: `chore(deps): upgrade ${request.Task.Package} to ${request.Task.TargetVersion} (security)`,
-        body: `Security dependency upgrade: ${request.Task.Package} ${request.Task.CurrentVersion} -> ${request.Task.TargetVersion}.`,
+        title: `chore(deps): upgrade ${request.task.Package} to ${request.task.TargetVersion} (security)`,
+        body: `Security dependency upgrade: ${request.task.Package} ${request.task.CurrentVersion} -> ${request.task.TargetVersion}.`,
         draft: true,
-        worktree: request.Worktree,
-        topic: `upgrade-${request.Task.Package}-${request.Task.TargetVersion}`,
+        worktree: request.worktree,
+        topic: `upgrade-${request.task.Package}-${request.task.TargetVersion}`,
       },
     },
   });
