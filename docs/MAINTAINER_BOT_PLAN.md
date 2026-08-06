@@ -75,7 +75,7 @@ worker's environment or in a run's sandbox.
 | SBOM | `syft` / `grype` | Optional; useful for the audit report |
 | Codebase context | Graphify | Tree-sitter, local, Apache 2.0, MCP server |
 | Sandbox | gVisor (runsc) under Docker | Ephemeral per run |
-| Agent | `AgentRuntime` iface — Pi SDK / OpenHands agent-server / Claude Agent SDK | Swappable |
+| Agent | `AgentRuntime` iface — Pi via `--mode rpc` (implemented) / OpenHands agent-server / Claude Agent SDK | Swappable |
 | Telemetry | OpenTelemetry + Langfuse | Per-run trace, tokens, cost |
 | Egress control | Squid or similar, allowlist | Registry hosts + git remote only |
 
@@ -144,6 +144,27 @@ The agent's job is the migration and getting tests green — discovery already
 happened deterministically. Success criterion is the repo's own suite inside the
 sandbox. Tests pass → normal PR. Tests fail → **draft** PR with the agent's
 notes and the failing output. Never hide a failure behind a clean-looking PR.
+
+**Agent runtime (implemented).** The default runtime is PI via its documented
+`--mode rpc` subprocess, wrapped by the swappable `AgentRuntime` seam
+(`internal/agent`). Lifecycle engineering that mattered:
+
+- The worker runs under a real init (`tini`) so the agent child is properly
+  supervised (orphan adoption, signal forwarding, zombie reaping).
+- Each run gets its own **process group** (`Setpgid`) and a **persistent
+  per-run session** (`--session-dir` on a mounted volume) so sessions survive
+  restarts and are recoverable.
+- Shutdown is graceful: on cancellation the process receives `SIGTERM`, bounded
+  by a `WaitDelay`, before any hard kill — never an abrupt `SIGKILL`.
+- The **diff-gate** and the deterministic `open_pr` intent are built in Go
+  *after* the agent finishes; the agent contributes content only, the executor
+  supplies targeting.
+
+**River gotcha (bit us in production).** River's default job timeout is
+**1 minute**. Every long agent run was killed at ~60s — surfacing as a killed
+subprocess, and only identifiable once the runtime logged the context cause.
+The queue client therefore sets `JobTimeout: -1` and relies on runpipe's own
+40-minute wall-clock cap (and token limits) to bound each run.
 
 ### 5.3 PR review
 
@@ -357,7 +378,7 @@ Taxonomy first. Redundancy second. Contradiction only if the first two are quiet
 |---|---|---|
 | Intents vs scoped token | Intents | If the verb set exceeds ~10 and keeps growing |
 | PR-head graph | Base graph only | Instrument how often the agent misses PR-introduced symbols |
-| Agent runtime | Pi SDK, OpenHands agent-server as second impl | Whichever wins on upgrade-PR success rate in Phase 2 |
+| Agent runtime | Pi via `--mode rpc` (implemented); OpenHands agent-server as second impl | Whichever wins on upgrade-PR success rate in Phase 2 |
 | Local vs API model | Hybrid, API for code-writing | Cost per merged PR |
 | pgvector | Drop | Docs-redundancy check, or run-history search |
 | `globMatch` | Placeholder | Before the deny list is load-bearing — swap in a real gitignore matcher |

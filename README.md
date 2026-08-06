@@ -56,13 +56,15 @@ and is committed before the next starts.
 
 ## Phase 2 upgrade pipeline
 
-Deterministic scan candidates become draft upgrade PRs: the LLM agent (PI, via
-OpenRouter) bumps the dependency + migrates code in a work branch off the
-default, runs tests, and the executor pushes + opens a **draft** PR. Web search
-is an optional aid (`SEARCH_API_KEY`); without it the agent works from pure LLM
-reasoning. Secrets live in gitignored `deploy/.env` (see `.env.example`) and
-only the executor resolves a write PAT. Branch/PR base = repo default branch;
-draft-by-default + diff/path validation + human review are the safety net.
+Deterministic scan candidates become draft upgrade PRs: the LLM agent runs
+inside a sandboxed clone (PI via `--mode rpc`, under `tini`, with persistent
+per-run sessions), bumps the dependency + migrates code off the default branch,
+runs tests, and the executor pushes + opens a **draft** PR. The worker runs
+without a job timeout (River's 1-minute default disabled); runpipe's own
+40-minute wall-clock cap bounds each run. Secrets live in gitignored
+`deploy/.env` (see `.env.example`) and only the executor resolves a write PAT.
+Branch/PR base = repo default branch; draft-by-default + diff/path validation
++ human review are the safety net.
 
 ## Develop
 
