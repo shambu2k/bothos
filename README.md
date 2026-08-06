@@ -30,7 +30,7 @@ this land* field from an immutable dispatch-time Grant. See
 | `internal/ledger` | `runs`/`findings`/`updates` Postgres spine + actionable candidates |
 | `internal/queue` | River-backed transactional queue + periodic jobs |
 | `internal/scan` / `internal/scanjob` | Deterministic scanners (osv-scanner) → findings |
-| `internal/agent` | Language-agnostic sidecar protocol + PI runtime (Node subprocess) |
+| `internal/agent` | PI agent via documented `--mode rpc` (persistent per-run sessions) + lifecycle hardening |
 | `internal/upgrade` | Candidate→task, grant, scheduler, git diff source |
 | `internal/runpipe` | Worker orchestration: sandbox → runtime → executor |
 | `internal/credstore` | Executor-only write-PAT resolution |
@@ -49,7 +49,7 @@ and is committed before the next starts.
 - [x] Phase 2 core — intent schema + validation kernel
 - [x] Phase 2 core — executor (logic + go-github adapter, idempotent, PAT-only-held-here)
 - [x] Phase 2 core — policy (dispatch-time grants) + runtime seam + registry + graph cache
-- [ ] Phase 2 — LLM upgrade PR pipeline (machinery built: PI runtime, adapter, scheduler, worker wiring; live PR awaits write PAT + OpenRouter key)
+- [ ] Phase 2 — LLM upgrade PR pipeline (machinery built: PI runtime via `--mode rpc` + persistent sessions, scheduler, worker wiring; live PR awaits write PAT + OpenRouter key on a persistent host)
 - [ ] Phase 3 — PR review (read-only, fork-safe)
 - [ ] Phase 4 — labeled issues (actor allowlist in policy ✅, worker wiring)
 - [ ] Phase 5 — doc linting (taxonomy → redundancy → contradiction)

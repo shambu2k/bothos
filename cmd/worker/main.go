@@ -35,9 +35,11 @@ import (
 
 func main() {
 	var (
-		dsn       = flag.String("dsn", envOr("DATABASE_URL", ""), "Postgres DSN")
-		queueName = flag.String("queue", "default", "river queue to consume")
-		piAdapter = flag.String("pi-adapter", envOr("PI_ADAPTER", "/opt/bothos/pi/adapter.mjs"), "path to the PI node adapter .mjs (run via node)")
+		dsn         = flag.String("dsn", envOr("DATABASE_URL", ""), "Postgres DSN")
+		queueName   = flag.String("queue", "default", "river queue to consume")
+		piBin       = flag.String("pi", envOr("PI_BIN", "pi"), "path to the pi CLI (RPC mode)")
+		piModel     = flag.String("pi-model", envOr("PI_MODEL", ""), "provider/id for the PI agent")
+		piSession   = flag.String("pi-session-dir", envOr("PI_SESSION_DIR", "/var/lib/bothos/sessions"), "persistent per-run PI session dir")
 		concurrency = flag.Int("concurrency", envIntOr("WORKER_CONCURRENCY", 2), "upgrade runs to process in parallel (each JIVA run is a heavy npm install)")
 	)
 	flag.Parse()
@@ -77,7 +79,12 @@ func main() {
 			return failRun(ctx, l, runID, err)
 		}
 
-		agent, err := runtime.New("pi", ctx, map[string]any{"adapter": *piAdapter})
+		agent, err := runtime.New("pi", ctx, map[string]any{
+			"pi":          *piBin,
+			"model":       *piModel,
+			"session_dir": *piSession,
+			"approve":     true,
+		})
 		if err != nil {
 			log.Printf("run %s: new pi runtime: %v", runID, err)
 			return failRun(ctx, l, runID, err)
