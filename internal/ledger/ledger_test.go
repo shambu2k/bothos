@@ -233,3 +233,18 @@ func insertRun(t *testing.T, st *Postgres, id string) {
 		t.Fatalf("seed run %s: %v", id, err)
 	}
 }
+
+// TestRunByIDScheduled guards the scheduled-run scan: upgrade/scheduled runs
+// have a NULL scope_number, which must scan to 0 (not error).
+func TestRunByIDScheduled(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "sched-1")
+	r, err := st.RunByID(ctx, "sched-1")
+	if err != nil {
+		t.Fatalf("RunByID scheduled: %v", err)
+	}
+	if r.Trigger != "scheduled" || r.ScopeNumber != 0 {
+		t.Fatalf("unexpected run: %+v", r)
+	}
+}
