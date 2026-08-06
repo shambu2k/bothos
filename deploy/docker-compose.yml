@@ -45,11 +45,15 @@ services:
       GITHUB_WRITE_TOKEN: ${GITHUB_WRITE_TOKEN:-} # write PAT (executor only)
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       PI_MODEL: ${PI_MODEL:-openrouter/deepseek/deepseek-v4-flash-0731}
+      PI_SESSION_DIR: /var/lib/bothos/sessions   # persistent per-run PI sessions
       SEARCH_API_KEY: ${SEARCH_API_KEY:-}         # optional; absent = pure-LLM
       SEARCH_PROVIDER: ${SEARCH_PROVIDER:-tavily}
+    volumes:
+      - bothos-sessions:/var/lib/bothos/sessions
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   pgdata:
+  bothos-sessions:
