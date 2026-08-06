@@ -15,9 +15,10 @@ RUN CGO_ENABLED=0 go build -o /out/gateway ./cmd/gateway \
 
 # Runtime: Node base so the worker can run the PI Agent sidecar (the Phase 2
 # LLM runtime) and `npm` for npm-ecosystem build/test during upgrades, plus the
-# static Go binaries and standalone scanners. A Go toolchain is NOT included;
+# static Go binaries and standalone scanners. Node 22 is required by the
+# @earendil-works/pi-coding-agent SDK (>=22.19). A Go toolchain is NOT included;
 # Go-ecosystem upgrades need it added later if used.
-FROM node:20-alpine
+FROM node:22-alpine
 RUN apk add --no-cache ca-certificates git
 
 # PI sidecar adapter + its deps (installed before COPY admin so the layer caches).
