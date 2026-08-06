@@ -58,6 +58,12 @@ func Open(ctx context.Context, dsn string, queueCfg map[string]river.QueueConfig
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Queues:  queueCfg,
 		Workers: workers,
+		// River's default job timeout is 1 minute — far too short for a long
+		// LLM agent run, which is what killed every upgrade run at ~60s
+		// (before this: SIGKILL; now visible as a context deadline). Disable
+		// the blanket deadline; runpipe/RPC enforce their own 40-min wall-clock
+		// cap and graceful cancellation instead.
+		JobTimeout: -1,
 	})
 	if err != nil {
 		pool.Close()
