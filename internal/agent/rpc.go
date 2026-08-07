@@ -51,11 +51,12 @@ func NewPIRPC(piBin, model, sessionDir string, approve bool) *RPC {
 // rpcEvent is the subset of PI RPC stdout events we consume. Unknown fields are
 // ignored; unknown event types are skipped, never fatal.
 type rpcEvent struct {
-	ID       string `json:"id,omitempty"`
-	Type     string `json:"type,omitempty"`
-	Command  string `json:"command,omitempty"`
-	Success  *bool  `json:"success,omitempty"`
-	ToolName string `json:"toolName,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Command   string `json:"command,omitempty"`
+	Success   *bool  `json:"success,omitempty"`
+	ToolName  string `json:"toolName,omitempty"`
+	WillRetry bool   `json:"willRetry,omitempty"`
 }
 
 // Run runs one upgrade task through a per-run `pi --mode rpc` subprocess whose
@@ -119,35 +120,41 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	}
 
 	enc := json.NewEncoder(stdin)
+	// The initial prompt carries the structured task plus the verdict contract.
 	if err := enc.Encode(map[string]any{
 		"id":      "1",
 		"type":    "prompt",
-		"message": runtime.UpgradePrompt(in.Task),
+		"message": runtime.UpgradePrompt(in.Task) + reportingInstructions,
 	}); err != nil {
 		_ = cmd.Process.Kill()
 		return runtime.RunResult{}, fmt.Errorf("write prompt: %w (%s)", err, errBuf.String())
 	}
 
-	// Stream events until the agent turn completes.
-	rejected := false
 	sc := bufio.NewScanner(stdout)
-	for sc.Scan() {
-		var ev rpcEvent
-		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-			continue // diagnostics / non-JSON line: not fatal
-		}
-		switch ev.Type {
-		case "tool_execution_start":
-			log.Printf("run %s: RPC tool %q", in.RunID, ev.ToolName)
-		case "response":
-			if ev.Command == "prompt" && ev.Success != nil && !*ev.Success {
-				rejected = true
+
+	// Settle -> verdict -> optional single nudge. The loop stays open across a
+	// settle so the agent can be steered once if it omitted the verdict.
+	settleErr := r.awaitSettled(in.RunID, sc)
+	var v *runtime.Verdict
+	if settleErr == nil {
+		v = readVerdict(worktree)
+		if v == nil {
+			// Exactly one nudge, then we re-read once and move on regardless.
+			if err := enc.Encode(map[string]any{
+				"id":      "2",
+				"type":    "prompt",
+				"message": "You did not write .bothos/verdict.json (or it was invalid JSON, or its \"status\" was not one of done / done_unverified / blocked). Write it now, exactly as specified, then stop.",
+			}); err == nil {
+				_ = r.awaitSettled(in.RunID, sc) // second settle may fail; verdict re-read below governs
+				v = readVerdict(worktree)
 			}
-		case "agent_end":
-			goto done // agent turn finished
 		}
 	}
-done:
+
+	// The .bothos directory is harness bookkeeping; it must never reach the
+	// diff gate or the PR.
+	_ = os.RemoveAll(filepath.Join(worktree, ".bothos"))
+
 	// Close stdin → PI's RPC loop shuts down gracefully, persisting the session.
 	_ = stdin.Close()
 
@@ -158,8 +165,9 @@ done:
 			in.RunID, err, ctx.Err(), time.Since(start).Round(time.Millisecond), errBuf.String())
 		return runtime.RunResult{}, fmt.Errorf("pi rpc: %w (ctx=%v)", err, ctx.Err())
 	}
-	if rejected {
-		return runtime.RunResult{}, fmt.Errorf("pi rpc: prompt rejected")
+	if settleErr != nil {
+		// Prompt rejection, or the process exited before settling cleanly.
+		return runtime.RunResult{}, settleErr
 	}
 
 	// Diff gate: the agent must have actually changed the worktree.
@@ -167,7 +175,88 @@ done:
 		return runtime.RunResult{}, fmt.Errorf("agent made no changes to the worktree")
 	}
 
-	return runtime.RunResult{Intents: []intent.Envelope{openPRIntent(in.RunID, worktree, in.Task)}}, nil
+	return runtime.RunResult{
+		Intents: []intent.Envelope{openPRIntent(in.RunID, worktree, in.Task, v)},
+		Verdict: v,
+	}, nil
+}
+
+// reportingInstructions is appended to the initial prompt so the agent knows
+// how to report its outcome. The verdict is prose for the PR body — never used
+// for targeting or gating. It belongs to this harness, not the runtime seam.
+const reportingInstructions = `
+
+When you finish, you MUST report your outcome by writing the file
+.bothos/verdict.json in the repository root with this exact shape:
+
+{"status": "done" | "done_unverified" | "blocked", "summary": "...", "verification": "..."}
+
+- "done": the change is complete and you verified it yourself (you ran the
+  build/tests/checks you judged appropriate, and they passed). In
+  "verification", state exactly what you ran and the result.
+- "done_unverified": the change is complete but you could not verify it (for
+  example: tests fail for pre-existing or environmental reasons unrelated to
+  your change, or no usable test setup exists). In "verification", state what
+  you tried and why it is inconclusive.
+- "blocked": you cannot complete the change. In "summary", explain why.
+
+How you validate is your decision: the full test suite, targeted tests, a
+build, or nothing — whatever fits this change. If a check fails, determine
+whether YOUR change caused it: fix what you broke, and do not chase
+pre-existing or environmental failures. The .bothos directory is harness
+bookkeeping; it is deleted when your run ends and must not be part of the
+change itself.`
+
+// awaitSettled scans RPC events until the agent is fully settled: an
+// agent_settled event, or agent_end with willRetry=false (fallback for pi
+// builds that predate agent_settled — we never queue steer/follow-up
+// messages, so the two are equivalent here). A prompt rejection (response
+// with command=prompt, success=false) and EOF before settling are errors.
+func (r *RPC) awaitSettled(runID string, sc *bufio.Scanner) error {
+	for sc.Scan() {
+		var ev rpcEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue // diagnostics / non-JSON line: not fatal
+		}
+		switch ev.Type {
+		case "tool_execution_start":
+			log.Printf("run %s: RPC tool %q", runID, ev.ToolName)
+		case "response":
+			if ev.Command == "prompt" && ev.Success != nil && !*ev.Success {
+				return fmt.Errorf("pi rpc: prompt rejected")
+			}
+		case "agent_settled":
+			return nil
+		case "agent_end":
+			if !ev.WillRetry {
+				return nil
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("pi rpc: scan: %w", err)
+	}
+	return fmt.Errorf("pi rpc: agent did not settle (EOF)")
+}
+
+// readVerdict parses <worktree>/.bothos/verdict.json. Returns nil, nil when
+// absent, unparsable, or carrying an unknown status — callers treat all three
+// as "no verdict".
+func readVerdict(worktree string) *runtime.Verdict {
+	b, err := os.ReadFile(filepath.Join(worktree, ".bothos", "verdict.json"))
+	if err != nil {
+		return nil
+	}
+	var v runtime.Verdict
+	if err := json.Unmarshal(b, &v); err != nil {
+		return nil
+	}
+	switch v.Status {
+	case runtime.VerdictDone, runtime.VerdictDoneUnverified, runtime.VerdictBlocked:
+		return &v
+	default:
+		return nil
+	}
 }
 
 // worktreeChanged reports whether the worktree differs from a clean baseline,
@@ -182,11 +271,33 @@ func worktreeChanged(worktree string) bool {
 
 // openPRIntent builds the single deterministic open_pr intent the runpipe and
 // executor already expect. Targeting (branch, base, repo) is resolved later by
-// the executor from the Grant — the agent contributes content only.
-func openPRIntent(runID, worktree string, t runtime.UpgradeTask) intent.Envelope {
+// the executor from the Grant — the agent contributes content only. The
+// agent's verdict, when present, is appended to the PR body as prose.
+func openPRIntent(runID, worktree string, t runtime.UpgradeTask, v *runtime.Verdict) intent.Envelope {
+	body := fmt.Sprintf("Security dependency upgrade: %s %s -> %s.", t.Package, t.CurrentVersion, t.TargetVersion)
+
+	heading, summary, verification := "", "", ""
+	switch {
+	case v == nil:
+		heading = "**Agent report (unverified change — review carefully):**"
+		summary, verification = "the agent did not report a run status", "the agent did not report a run status"
+	case v.Status == runtime.VerdictDone:
+		heading = "**Agent report:**"
+		summary, verification = v.Summary, v.Verification
+	case v.Status == runtime.VerdictDoneUnverified:
+		heading = "**Agent report (unverified change — review carefully):**"
+		summary, verification = v.Summary, v.Verification
+	case v.Status == runtime.VerdictBlocked:
+		heading = "**Agent report (BLOCKED — change incomplete):**"
+		summary, verification = v.Summary, v.Verification
+	}
+	if heading != "" {
+		body = fmt.Sprintf("%s\n\n---\n%s %s\n\n**Verification:** %s", body, heading, summary, verification)
+	}
+
 	pc := intent.OpenPR{
 		Title:    fmt.Sprintf("chore(deps): upgrade %s to %s (security)", t.Package, t.TargetVersion),
-		Body:     fmt.Sprintf("Security dependency upgrade: %s %s -> %s.", t.Package, t.CurrentVersion, t.TargetVersion),
+		Body:     body,
 		Draft:    true,
 		Worktree: worktree,
 		Topic:    fmt.Sprintf("upgrade-%s-%s", t.Package, t.TargetVersion),

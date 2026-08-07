@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -27,8 +26,8 @@ import (
 	"github.com/shambu2k/bothos/internal/intent"
 	"github.com/shambu2k/bothos/internal/ledger"
 	"github.com/shambu2k/bothos/internal/queue"
-	"github.com/shambu2k/bothos/internal/runtime"
 	"github.com/shambu2k/bothos/internal/runpipe"
+	"github.com/shambu2k/bothos/internal/runtime"
 	"github.com/shambu2k/bothos/internal/scanjob"
 	"github.com/shambu2k/bothos/internal/upgrade"
 )
@@ -95,7 +94,6 @@ func main() {
 			Agent:   agent,
 			Exec:    executor.NewExecutor(credStore, l, gh, upgrade.GitDiff{Base: g.Scope.BaseRef}, time.Now),
 			Sandbox: newSandboxer(),
-			ReTest:  retest,
 			Commit:  commitWorktree,
 		}
 		if _, err := pipeline.Run(ctx, runID); err != nil {
@@ -161,19 +159,6 @@ func (s *worksandbox) Exec(ctx context.Context, cmd string, args ...string) (run
 		return out, err
 	}
 	return out, nil
-}
-
-// retest re-runs the test command after the agent as the gate before any PR.
-func retest(ctx context.Context, worktree, cmd string) error {
-	if strings.TrimSpace(cmd) == "" {
-		return nil
-	}
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
-	c.Dir = worktree
-	if _, err := c.CombinedOutput(); err != nil {
-		return err
-	}
-	return nil
 }
 
 // commitWorktree stages and commits the agent's changes locally (no credential

@@ -71,7 +71,7 @@ func TestUpgradePromptEscapesBackticks(t *testing.T) {
 		TestCommand: "make test",
 	})
 	// After the end marker, the response template should still be intact.
-	if !strings.HasSuffix(p, "Run the test command and report results.") {
+	if !strings.HasSuffix(p, "Validate your change however you judge appropriate — the test command above is a hint, not a requirement.") {
 		t.Fatalf("prompt structure broken by embedded fence:\n%s", p)
 	}
 }

@@ -140,10 +140,14 @@ graph nodes referencing the package,
 test command
 ```
 
-The agent's job is the migration and getting tests green — discovery already
-happened deterministically. Success criterion is the repo's own suite inside the
-sandbox. Tests pass → normal PR. Tests fail → **draft** PR with the agent's
-notes and the failing output. Never hide a failure behind a clean-looking PR.
+The agent (LLM) decides how to validate the change and reports a structured
+verdict (`.bothos/verdict.json`, one of `done` / `done_unverified` / `blocked`)
+with a summary and a verification note. The harness runs no test gate itself:
+it only holds the session open, reads the verdict, nudges once if it is
+missing, and maps the verdict to the PR. Unverified or blocked runs still open
+a **draft** PR whose body carries the agent's verification report — a run is
+never silently presented as clean. Never hide a failure behind a clean-looking
+PR.
 
 **Agent runtime (implemented).** The default runtime is PI via its documented
 `--mode rpc` subprocess, wrapped by the swappable `AgentRuntime` seam
@@ -159,6 +163,12 @@ notes and the failing output. Never hide a failure behind a clean-looking PR.
 - The **diff-gate** and the deterministic `open_pr` intent are built in Go
   *after* the agent finishes; the agent contributes content only, the executor
   supplies targeting.
+- The RPC session stays open across a **settle → verdict → optional single
+  nudge** cycle: after the agent settles, runpipe reads `.bothos/verdict.json`,
+  nudges once if it is missing, and annotates the PR body with the agent's
+  report. The harness runs **no test gate itself** — the post-run re-verify
+  gate (`ReTest`) was removed; validation is the agent's call and its result is
+  reported via the verdict.
 
 **River gotcha (bit us in production).** River's default job timeout is
 **1 minute**. Every long agent run was killed at ~60s — surfacing as a killed
