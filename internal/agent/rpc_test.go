@@ -89,7 +89,10 @@ func task() runtime.UpgradeTask {
 
 func TestRPCBuildsOpenPRIntentAndSendsPrompt(t *testing.T) {
 	repo := newRepo(t)
-	r, logf := newRPC(t, map[string]string{"FAKE_PI_EDIT": "1"})
+	r, logf := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":    "1",
+		"FAKE_PI_VERDICT": `{"status":"done","summary":"bumped","verification":"ran checks"}`,
+	})
 
 	res, err := r.Run(context.Background(), runtime.RunInput{
 		RunID: "run-1", Task: task(), Sandbox: dirSandbox{dir: repo},
@@ -134,7 +137,9 @@ func TestRPCBuildsOpenPRIntentAndSendsPrompt(t *testing.T) {
 
 func TestRPCNoChangesIsError(t *testing.T) {
 	repo := newRepo(t)
-	r, _ := newRPC(t, nil) // no edit => worktree unchanged
+	r, _ := newRPC(t, map[string]string{ // no edit => worktree unchanged
+		"FAKE_PI_VERDICT": `{"status":"done","summary":"bumped","verification":"ran checks"}`,
+	})
 
 	res, err := r.Run(context.Background(), runtime.RunInput{
 		RunID: "run-2", Task: task(), Sandbox: dirSandbox{dir: repo},
@@ -186,5 +191,226 @@ func TestRPCRejectedPromptIsError(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("want 'rejected' error, got %v", err)
+	}
+}
+
+// openPRBody returns the Body of the single open_pr intent, failing the test
+// if there is none.
+func openPRBody(t *testing.T, res runtime.RunResult) string {
+	t.Helper()
+	for _, env := range res.Intents {
+		if env.Kind == intent.KindOpenPR {
+			var pc intent.OpenPR
+			if err := json.Unmarshal(env.Payload, &pc); err != nil {
+				t.Fatalf("payload: %v", err)
+			}
+			return pc.Body
+		}
+	}
+	t.Fatal("no open_pr intent")
+	return ""
+}
+
+// promptCount counts the "prompt" commands the fake pi received (one JSON line
+// each on the log).
+func promptCount(t *testing.T, logf string) int {
+	t.Helper()
+	n := 0
+	for _, l := range strings.Split(readAll(t, logf), "\n") {
+		if strings.Contains(l, `"type":"prompt"`) {
+			n++
+		}
+	}
+	return n
+}
+
+func TestRPCVerifiedVerdictAnnotatesAndCleansBothos(t *testing.T) {
+	repo := newRepo(t)
+	r, logf := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":    "1",
+		"FAKE_PI_VERDICT": `{"status":"done","summary":"bumped adm-zip","verification":"ran npm test: 42 pass"}`,
+	})
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-done", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Verdict == nil || res.Verdict.Status != runtime.VerdictDone {
+		t.Fatalf("verdict = %+v", res.Verdict)
+	}
+	if body := openPRBody(t, res); !strings.Contains(body, "ran npm test: 42 pass") {
+		t.Fatalf("body missing verification:\n%s", body)
+	}
+	// .bothos must be removed before the diff gate / PR.
+	if _, err := os.Stat(filepath.Join(repo, ".bothos")); !os.IsNotExist(err) {
+		t.Fatalf(".bothos should be removed, stat err=%v", err)
+	}
+	// The verdict arrived on the first settle, so no nudge: exactly one prompt.
+	if got := promptCount(t, logf); got != 1 {
+		t.Fatalf("want 1 prompt, got %d", got)
+	}
+}
+
+func TestRPCDoneUnverifiedSucceedsAndAnnotates(t *testing.T) {
+	// The reported incident: agent cannot verify because tests are red for
+	// pre-existing/environmental reasons. Must not hard-fail the run; the PR
+	// body carries the explanation.
+	repo := newRepo(t)
+	r, _ := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":    "1",
+		"FAKE_PI_VERDICT": `{"status":"done_unverified","summary":"bumped adm-zip","verification":"npm test fails on main too (needs a database); failure is pre-existing"}`,
+	})
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-uni", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run should succeed (no re-verify gate): %v", err)
+	}
+	if res.Verdict == nil || res.Verdict.Status != runtime.VerdictDoneUnverified {
+		t.Fatalf("verdict = %+v", res.Verdict)
+	}
+	body := openPRBody(t, res)
+	if !strings.Contains(body, "unverified change") || !strings.Contains(body, "pre-existing") {
+		t.Fatalf("body missing unverified annotation:\n%s", body)
+	}
+}
+
+func TestRPCNudgesForMissingVerdictThenReadsIt(t *testing.T) {
+	repo := newRepo(t)
+	r, logf := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":              "1",
+		"FAKE_PI_VERDICT":           `{"status":"done","summary":"bumped","verification":"ran checks"}`,
+		"FAKE_PI_VERDICT_ON_PROMPT": "2",
+	})
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-nudge", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s := readAll(t, logf)
+	if got := promptCount(t, logf); got != 2 {
+		t.Fatalf("want 2 prompts, got %d:\n%s", got, s)
+	}
+	if !strings.Contains(s, "did not write .bothos/verdict.json") {
+		t.Fatalf("second prompt missing nudge:\n%s", s)
+	}
+	if res.Verdict == nil || res.Verdict.Status != runtime.VerdictDone {
+		t.Fatalf("verdict = %+v", res.Verdict)
+	}
+}
+
+func TestRPCNudgeExhaustedYieldsNilVerdict(t *testing.T) {
+	repo := newRepo(t)
+	r, logf := newRPC(t, map[string]string{"FAKE_PI_EDIT": "1"}) // agent never writes a verdict
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-exh", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := promptCount(t, logf); got != 2 {
+		t.Fatalf("want exactly 2 prompts (initial + one nudge, never a third), got %d", got)
+	}
+	if res.Verdict != nil {
+		t.Fatalf("verdict should be nil, got %+v", res.Verdict)
+	}
+	if body := openPRBody(t, res); !strings.Contains(body, "the agent did not report a run status") {
+		t.Fatalf("body missing nil-verdict note:\n%s", body)
+	}
+}
+
+func TestRPCBlockedWithChangesAnnotates(t *testing.T) {
+	repo := newRepo(t)
+	r, _ := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":    "1",
+		"FAKE_PI_VERDICT": `{"status":"blocked","summary":"cannot migrate: API removed","verification":""}`,
+	})
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-blk", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Verdict == nil || res.Verdict.Status != runtime.VerdictBlocked {
+		t.Fatalf("verdict = %+v", res.Verdict)
+	}
+	if body := openPRBody(t, res); !strings.Contains(body, "BLOCKED") {
+		t.Fatalf("body missing BLOCKED annotation:\n%s", body)
+	}
+}
+
+func TestRPCBlockedWithoutChangesIsError(t *testing.T) {
+	repo := newRepo(t)
+	r, _ := newRPC(t, map[string]string{
+		"FAKE_PI_VERDICT": `{"status":"blocked","summary":"cannot migrate: API removed","verification":""}`,
+	})
+
+	_, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-blkx", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no changes") {
+		t.Fatalf("want 'no changes' error, got %v", err)
+	}
+}
+
+func TestRPCInvalidVerdictTreatedAsAbsent(t *testing.T) {
+	repo := newRepo(t)
+	r, logf := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":    "1",
+		"FAKE_PI_VERDICT": `{"status":"great"}`,
+	})
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-inv", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Verdict != nil {
+		t.Fatalf("invalid verdict should be nil, got %+v", res.Verdict)
+	}
+	if got := promptCount(t, logf); got != 2 {
+		t.Fatalf("invalid status should take the nudge path (2 prompts), got %d", got)
+	}
+	if body := openPRBody(t, res); !strings.Contains(body, "the agent did not report a run status") {
+		t.Fatalf("body missing nil-verdict note:\n%s", body)
+	}
+}
+
+func TestRPCRetriesSettleViaAgentEndFallback(t *testing.T) {
+	// Old pi builds that predate agent_settled signal settlement with
+	// agent_end (willRetry:false). The loop must still settle, nudge, and
+	// read the verdict written after the nudge.
+	repo := newRepo(t)
+	r, _ := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":              "1",
+		"FAKE_PI_AGENT_END":         "1",
+		"FAKE_PI_VERDICT":           `{"status":"done","summary":"bumped","verification":"ran checks"}`,
+		"FAKE_PI_VERDICT_ON_PROMPT": "2",
+	})
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-fb", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Verdict == nil || res.Verdict.Status != runtime.VerdictDone {
+		t.Fatalf("verdict = %+v", res.Verdict)
 	}
 }

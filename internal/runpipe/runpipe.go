@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/shambu2k/bothos/internal/executor"
@@ -43,8 +44,6 @@ type Pipeline struct {
 	Agent   runtime.AgentRuntime
 	Exec    Executor
 	Sandbox Sandboxer
-	// ReTest re-runs the test command in the worktree after the agent, gate.
-	ReTest func(ctx context.Context, worktree, cmd string) error
 	// Commit stages and commits the worktree on branch (local, no token).
 	Commit func(ctx context.Context, worktree, branch string) error
 }
@@ -101,6 +100,11 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))
 	}
+	verdictStatus := "none"
+	if res.Verdict != nil {
+		verdictStatus = res.Verdict.Status
+	}
+	log.Printf("run %s: agent verdict %q", runID, verdictStatus)
 	var openPR *intent.Envelope
 	for i := range res.Intents {
 		if res.Intents[i].Kind == "open_pr" {
@@ -112,11 +116,6 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 		return fail(fmt.Errorf("no open_pr intent produced"))
 	}
 
-	if p.ReTest != nil && task.TestCommand != "" {
-		if err := p.ReTest(ctx, sb.Worktree(), task.TestCommand); err != nil {
-			return fail(fmt.Errorf("re-verify tests: %w", err))
-		}
-	}
 	if p.Commit != nil {
 		if err := p.Commit(ctx, sb.Worktree(), branch); err != nil {
 			return fail(fmt.Errorf("commit: %w", err))

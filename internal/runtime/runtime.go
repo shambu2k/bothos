@@ -43,6 +43,20 @@ type Limits struct {
 	MaxSeconds time.Duration
 }
 
+// Verdict is the agent's structured end-of-run report, written by the agent
+// itself. It is prose for the PR body — never used for targeting or gating.
+type Verdict struct {
+	Status       string `json:"status"`       // one of the Verdict* constants
+	Summary      string `json:"summary"`      // what changed / why blocked
+	Verification string `json:"verification"` // what the agent ran and the result, or why it couldn't verify
+}
+
+const (
+	VerdictDone           = "done"            // change complete, agent verified it itself
+	VerdictDoneUnverified = "done_unverified" // change complete, agent could not verify (pre-existing/environmental)
+	VerdictBlocked        = "blocked"         // agent cannot complete the change
+)
+
 // UpgradeTask is the structured input for a dependency-upgrade run. Discovery
 // already happened deterministically (osv-scanner + renovate dry-run); the
 // agent's job is the migration and green tests, not discovery.
@@ -70,6 +84,7 @@ type RunResult struct {
 	TokensIn  int
 	TokensOut int
 	CostUSD   float64
+	Verdict   *Verdict // nil = agent never produced a valid verdict
 }
 
 // AgentRuntime is the swappable agent backend. Implementations: Pi SDK,
@@ -111,7 +126,7 @@ func UpgradePrompt(t UpgradeTask) string {
 
 	fmt.Fprintf(&b, "Your job: migrate the code so it works with %s.\n", t.TargetVersion)
 	fmt.Fprintf(&b, "Test command: %s\n", t.TestCommand)
-	fmt.Fprintf(&b, "Run the test command and report results.")
+	fmt.Fprintf(&b, "Validate your change however you judge appropriate — the test command above is a hint, not a requirement.")
 	return b.String()
 }
 

@@ -24,7 +24,7 @@ func (s *fakeStore) SetRunStatus(ctx context.Context, id string, st ledger.RunSt
 
 type fakeSandbox struct{ wt string }
 
-func (s fakeSandbox) Worktree() string                             { return s.wt }
+func (s fakeSandbox) Worktree() string { return s.wt }
 func (s fakeSandbox) Exec(ctx context.Context, c string, a ...string) (runtime.Output, error) {
 	return runtime.Output{}, nil
 }
@@ -59,7 +59,6 @@ func TestPipelineHappyPath(t *testing.T) {
 		Agent:   fakeAgent{intents: []intent.Envelope{{RunID: "r1", Kind: "open_pr", Payload: json.RawMessage(`{"topic":"upgrade-adm-zip-0.6.0"}`)}}},
 		Exec:    fakeExec{result: executor.Result{GitHubRef: "acme/repo#9"}},
 		Sandbox: func(ctx context.Context, repo, branch, base string) (runtime.Sandbox, error) { return sb, nil },
-		ReTest:  func(ctx context.Context, w, c string) error { return nil },
 		Commit:  func(ctx context.Context, w, b string) error { return nil },
 	}
 
@@ -80,10 +79,12 @@ func TestPipelineFailsWithoutIntent(t *testing.T) {
 	metaJSON, _ := json.Marshal(UpgradeMeta{Package: "adm-zip", From: "0.5.17", To: "0.6.0"})
 	st := &fakeStore{run: ledger.Run{ID: "r2", Grant: grantJSON, Meta: metaJSON}}
 	p := &Pipeline{
-		Store:   st,
-		Agent:   fakeAgent{}, // no intents
-		Exec:    fakeExec{},
-		Sandbox: func(ctx context.Context, r, b, base string) (runtime.Sandbox, error) { return fakeSandbox{"/tmp/x"}, nil },
+		Store: st,
+		Agent: fakeAgent{}, // no intents
+		Exec:  fakeExec{},
+		Sandbox: func(ctx context.Context, r, b, base string) (runtime.Sandbox, error) {
+			return fakeSandbox{"/tmp/x"}, nil
+		},
 	}
 	if _, err := p.Run(context.Background(), "r2"); err == nil {
 		t.Fatal("expected error when no open_pr intent is produced")
