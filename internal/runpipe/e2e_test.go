@@ -31,6 +31,7 @@ import (
 type stubStore struct {
 	run    ledger.Run
 	status ledger.RunStatus
+	ref    string
 }
 
 func (s *stubStore) RunByID(ctx context.Context, id string) (ledger.Run, error) { return s.run, nil }
@@ -39,6 +40,10 @@ func (s *stubStore) SetRunStatus(ctx context.Context, id string, st ledger.RunSt
 	return nil
 }
 func (s *stubStore) SetRunFailure(ctx context.Context, id, reason string) error { return nil }
+func (s *stubStore) SetRunRef(ctx context.Context, id, ref string) error {
+	s.ref = ref
+	return nil
+}
 
 type staticStore struct{}
 
@@ -93,7 +98,7 @@ func (s dirSandbox) Exec(ctx context.Context, c string, a ...string) (runtime.Ou
 // recordingExecutor captures the envelope+grant the pipeline handed the
 // executor, then delegates to the real one (for the dedup re-execution assert).
 type recordingExecutor struct {
-	inner   runpipe.Executor
+	inner    runpipe.Executor
 	captured *intent.Envelope
 }
 

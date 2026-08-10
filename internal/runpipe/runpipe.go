@@ -27,6 +27,7 @@ type Store interface {
 	RunByID(ctx context.Context, id string) (ledger.Run, error)
 	SetRunStatus(ctx context.Context, id string, s ledger.RunStatus) error
 	SetRunFailure(ctx context.Context, id, reason string) error
+	SetRunRef(ctx context.Context, id, ref string) error
 }
 
 // Executor is the write seam (the real one is executor.Executor).
@@ -92,10 +93,10 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	// exceed 15m, so cap generously at 40m (drafts are cheap to kill).
 	wall := 40 * time.Minute
 	res, err := p.Agent.Run(ctx, runtime.RunInput{
-		RunID:  runID,
-		Task:   runtime.SecurityTask{BaseRef: m.BaseRef},
+		RunID:   runID,
+		Task:    runtime.SecurityTask{BaseRef: m.BaseRef},
 		Sandbox: sb,
-		Limits: runtime.Limits{MaxSeconds: wall},
+		Limits:  runtime.Limits{MaxSeconds: wall},
 	})
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))
@@ -130,6 +131,9 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	cr, err := p.Exec.Execute(ctx, *openPR, g, sb.Worktree())
 	if err != nil {
 		return fail(fmt.Errorf("execute: %w", err))
+	}
+	if err := p.Store.SetRunRef(ctx, runID, cr.GitHubRef); err != nil {
+		return "", fmt.Errorf("record ref: %w", err)
 	}
 	if err := p.Store.SetRunStatus(ctx, runID, ledger.RunSucceeded); err != nil {
 		return "", err
