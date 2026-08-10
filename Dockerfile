@@ -25,9 +25,11 @@ FROM node:22-alpine
 RUN apk add --no-cache ca-certificates git tini
 
 # trivy is not in Alpine's community repo (v3.24), so download the release
-# tarball. TARGETARCH is set by the Docker build engine; asset names are
-# Linux-64bit (amd64) and Linux-ARM64 (arm64).
+# tarball. TARGETARCH is a BuildKit predefined arg — it must be declared with
+# ARG or it expands empty; asset names are Linux-64bit (amd64) and
+# Linux-ARM64 (arm64).
 ARG TRIVY_VERSION=0.73.0
+ARG TARGETARCH
 RUN ARCH=$(echo "$TARGETARCH" | sed 's/amd64/64bit/; s/arm64/ARM64/') && \
     wget -q "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${ARCH}.tar.gz" -O /tmp/trivy.tar.gz && \
     tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy && \
