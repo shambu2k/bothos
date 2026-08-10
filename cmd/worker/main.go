@@ -78,7 +78,11 @@ func main() {
 		})
 		if err != nil {
 			log.Printf("run %s: new pi runtime: %v", runID, err)
-			return failRun(ctx, l, runID, err)
+			_ = failRun(ctx, l, runID, err)
+			// Terminal: the run outcome is recorded in the ledger. Returning
+			// the error would make River retry the whole expensive agent run
+			// (each retry burns up to the full wall cap again).
+			return nil
 		}
 
 		pipeline := &runpipe.Pipeline{
@@ -89,7 +93,12 @@ func main() {
 		}
 		if _, err := pipeline.Run(ctx, runID); err != nil {
 			log.Printf("run %s: pipeline: %v", runID, err)
-			return failRun(ctx, l, runID, err)
+			_ = failRun(ctx, l, runID, err)
+			// Terminal, for the same reason as above: runpipe.fail() already
+			// recorded status+reason. A River retry would re-run the agent and
+			// burn tokens again (or fail fast on the now-expired grant, which
+			// is pure churn).
+			return nil
 		}
 		return nil
 	}
