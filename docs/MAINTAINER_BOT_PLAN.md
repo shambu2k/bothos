@@ -187,14 +187,37 @@ The queue client therefore sets `JobTimeout: -1` and relies on runpipe's own
 
 ### 5.3 PR review
 
-`pull_request` opened/synchronize → read-only grant, `q:review`. The sandbox
-executes untrusted fork code, so this run holds no write-capable token at all;
-review comments come back as intents and the executor posts them.
+Read-only, opt-in review. Triggers, in order of preference:
 
-`graphify prs` gives merge-conflict risk by graph community, which is worth
-surfacing alongside the review.
+1. Label `bothos/review` on a PR — works even with auto-review off (a positive
+   label is itself the opt-in; CodeRabbit pattern)
+2. `@bothos review` comment on a PR — manual, incremental (head vs base)
+3. Auto-review on `pull_request` opened/synchronize — per-repo opt-in only
+   (`repo_config.auto_review`); default OFF
 
-No approve verdict — see the intent schema.
+The sandbox executes untrusted fork code, so this run holds no write-capable
+token at all; review comments come back as intents and the executor posts them
+under a comment-only PAT at post time (the grant stays read-only).
+
+**Evidence-tagged reviews (differentiator).** Every review item is tagged
+`[verified]` or `[opinion]`:
+
+- **Tier 1 — deterministic, zero LLM:** denied-path hits in the diff,
+  secret-like patterns in added lines, dependency manifest delta, and an
+  osv-scanner delta (new vulnerable packages introduced by the PR, with
+  advisory IDs). Each emits `[verified]` with the exact command + output.
+- **Tier 2 — agent prose:** code-review judgment, tagged `[opinion]`, phrased
+  as questions, never "approve".
+
+The `[verified]`/`[opinion]` split is the trust device: a human can tell at a
+glance what is real and what is a guess — the #1 failure mode of AI review
+bots. The review lands as **one persistent comment, updated in place** on new
+pushes (never N comments), plus the `graphify prs` merge-conflict signal when
+useful.
+
+No approve verdict — see the intent schema. Manual comment triggers require
+actor write access; resolved via GitHub collaborator permission at dispatch
+(fail closed without a token).
 
 ### 5.4 Labeled issues → PR
 
@@ -202,9 +225,28 @@ Widest attack surface: whoever can apply a label can trigger a write-capable
 run. Two gates, both in policy:
 
 1. Label ∈ `repo_config.allowed_labels`
-2. Actor ∈ `repo_config.actor_allowlist` (or has write permission on the repo)
+2. Actor ∈ `repo_config.actor_allowlist` (or has write permission on the repo,
+   resolved via GitHub collaborator permission at dispatch — fail closed
+   without a token; never default-allow)
 
 Ship this **last**.
+
+**Lifecycle.** Label `bothos/fix` on an issue → bot reacts 👀 and comments
+"on it" → agent clones, reads the issue itself, fixes → opens a **draft PR**
+whose body is the verifier **receipt** (scan before/after, tests, claimed
+fixes, "not touched" denied paths, `Fixes #N` attached by the executor from
+scope — never from agent text) → delivery comment with summary + PR link →
+**label removed** (the label is a queue: re-add = re-run; close-without-merge
++ re-add = retry). One live run per issue (dedupe on redelivery/resume).
+
+**Handoff, not failure (differentiator).** When the agent is blocked it does
+not die silently and does not invent an answer. It posts one handoff comment —
+what it tried, the blocker as *a question a human can answer in ~30 seconds*,
+the options it sees — park the run as **`needs_input`**, and keep the label on.
+A human reply (mention or plain answer to a parked run) spawns a **resume run**
+linked to the parent (`parent_run_id`): the agent continues its own PI session
+with the answer in context and proceeds to the PR. Blocked runs are never
+River-retried; they wait for a human.
 
 ### 5.5 Documentation linting
 
@@ -366,14 +408,23 @@ useful security bot at zero LLM cost.
 twice on retry, every one traceable to a run.
 
 **Phase 3 — PR review.**
-Read-only grant, fork-safe.
+Read-only grant, fork-safe, opt-in (label `bothos/review`, `@bothos review`,
+or per-repo `auto_review`). Evidence-tagged: tier-1 deterministic checks
+(denied paths, secrets, dep delta, osv delta) emit `[verified]`; agent prose
+emits `[opinion]`. One persistent comment, updated in place.
 *Exit:* review comments on 20 PRs with a false-positive rate you'd tolerate as a
 reviewer. If you wouldn't, tune before proceeding — a noisy bot gets muted.
+(`[verified]` items spot-checked against a manual scan; opinions are the only
+noise source.)
 
 **Phase 4 — labeled issues.**
-Actor allowlist enforced in policy.
+Actor allowlist enforced in policy, `ActorHasWrite` resolved from GitHub
+(fail closed). Label `bothos/fix` → draft PR with verifier receipt, label
+removed on done. Blocked → handoff question comment + `needs_input` + resume
+on human reply.
 *Exit:* an unauthorized actor applying the trigger label produces a denied run in
-the ledger and nothing else.
+the ledger and nothing else; a blocked run always yields a handoff comment
+(never a silent stand-down) and resumes correctly on a reply.
 
 **Phase 5 — doc linting.**
 Taxonomy first. Redundancy second. Contradiction only if the first two are quiet.
