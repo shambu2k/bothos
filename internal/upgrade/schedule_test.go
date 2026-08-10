@@ -101,6 +101,20 @@ func TestScheduleOneRunPerRepo(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("resume after failure: n=%d err=%v (want 1)", n, err)
 	}
+
+	// A succeeded run is terminal and must NOT block the next schedule —
+	// regression: 3 succeeded runs blocked re-scheduling forever.
+	run2, err := s.Ledger.RunByID(ctx, runIDFor(t, s))
+	if err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+	if err := s.Ledger.SetRunStatus(ctx, run2.ID, ledger.RunSucceeded); err != nil {
+		t.Fatalf("succeed run: %v", err)
+	}
+	n, err = s.Schedule(ctx, "acme", "repo", "main", true)
+	if err != nil || n != 1 {
+		t.Fatalf("resume after success: n=%d err=%v (want 1)", n, err)
+	}
 }
 
 func runIDFor(t *testing.T, s *Scheduler) string {
