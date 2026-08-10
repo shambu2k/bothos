@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"os"
@@ -469,5 +470,24 @@ func TestWithoutSecretsStripsWriteTokens(t *testing.T) {
 		if !found {
 			t.Fatalf("expected %q preserved in env: %v", want, out)
 		}
+	}
+}
+
+// TestRPCTokenTooLong guards the scanner buffer: PI can emit single lines far
+// over the bufio 64KB default, which would abort the run with "token too long".
+// The scanner must accept lines up to 4MB (regression for the redesign drop).
+func TestRPCTokenTooLong(t *testing.T) {
+	long := strings.Repeat("x", 300*1024) + "\n" // 300KB single line
+	got := ""
+	sc := bufio.NewScanner(strings.NewReader(long))
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		got = sc.Text()
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scanner rejected long line: %v", err)
+	}
+	if len(got) != 300*1024 {
+		t.Fatalf("scanned %d bytes, want %d", len(got), 300*1024)
 	}
 }
