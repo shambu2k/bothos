@@ -141,7 +141,12 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		return runtime.RunResult{}, fmt.Errorf("write prompt: %w (%s)", err, errBuf.String())
 	}
 
+	// PI can emit very long single lines (large diffs, verbose tool output,
+	// JSON blobs). The bufio default max token is 64KB and will abort the
+	// scan with "token too long" — raise it to 4MB like the pre-redesign
+	// scanner did. Failure here is a hard run error otherwise.
 	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	// Settle -> verdict -> optional single nudge. The loop stays open across a
 	// settle so the agent can be steered once if it omitted the verdict.
