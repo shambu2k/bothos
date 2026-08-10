@@ -68,10 +68,18 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 
 	fail := func(err error) (string, error) {
 		_ = p.Store.SetRunStatus(ctx, runID, ledger.RunFailed)
+		_ = p.Store.SetRunFailure(ctx, runID, err.Error())
 		return "", err
 	}
 	if err := p.Store.SetRunStatus(ctx, runID, ledger.RunRunning); err != nil {
 		return "", err
+	}
+
+	// A stale grant is a terminal, zero-value run: the executor would reject
+	// any intent at execute time and the agent run (up to the wall cap) is
+	// pure wasted tokens. Fail fast before starting the agent instead.
+	if time.Now().After(g.ExpiresAt) {
+		return fail(fmt.Errorf("grant expired at %s (dispatched %s)", g.ExpiresAt, g.IssuedAt))
 	}
 
 	sb, err := p.Sandbox(ctx, g.Repo.Owner+"/"+g.Repo.Name)
