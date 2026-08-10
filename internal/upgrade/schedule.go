@@ -110,14 +110,17 @@ func (s *Scheduler) Schedule(ctx context.Context, owner, name, baseRefOverride s
 	return 1, nil
 }
 
-// alreadyScheduled reports whether the repo already has a non-failed,
-// non-denied upgrade run outstanding. Any such run suppresses a new one.
+// alreadyScheduled reports whether the repo already has an outstanding
+// (queued or running) upgrade run. Only non-terminal states suppress a new
+// one — a succeeded run is done, not outstanding, and must not block the next
+// schedule (a regression bit us: 3 succeeded runs blocked re-scheduling
+// forever).
 func (s *Scheduler) alreadyScheduled(ctx context.Context, repo string) (bool, error) {
 	var c int
 	err := s.Queue.Pool().QueryRow(ctx, `
 		SELECT count(*) FROM runs
 		WHERE repo_id=$1 AND trigger='upgrade'
-		  AND status NOT IN ('failed','denied')`, repo).Scan(&c)
+		  AND status IN ('queued','running')`, repo).Scan(&c)
 	return c > 0, err
 }
 
