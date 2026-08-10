@@ -177,3 +177,16 @@ func hasRule(res Result, rule string) bool {
 	}
 	return false
 }
+
+// TestStripBothos: .bothos/ (harness bookkeeping, deleted at run end) must
+// never count as an uncommitted/untracked change, but real changes stay.
+func TestStripBothos(t *testing.T) {
+	in := " M src/app.js\n?? .bothos/\n?? package-lock.json\n"
+	out := stripBothos(in)
+	if strings.Contains(out, ".bothos") {
+		t.Fatalf(".bothos still present: %q", out)
+	}
+	if !strings.Contains(out, "src/app.js") || !strings.Contains(out, "package-lock.json") {
+		t.Fatalf("real changes dropped: %q", out)
+	}
+}

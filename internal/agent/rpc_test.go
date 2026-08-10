@@ -491,3 +491,41 @@ func TestRPCTokenTooLong(t *testing.T) {
 		t.Fatalf("scanned %d bytes, want %d", len(got), 300*1024)
 	}
 }
+
+// TestAwaitConfigAcks: the two config commands must each be acked as success
+// before the prompt is sent. A rejected command is a hard error.
+func TestAwaitConfigAcks(t *testing.T) {
+	cfg := []struct{ id, typ string }{
+		{"cfg-compaction", "set_auto_compaction"},
+		{"cfg-retry", "set_auto_retry"},
+	}
+
+	// Both acked -> nil.
+	stream := "{\"id\":\"cfg-retry\",\"type\":\"response\",\"command\":\"set_auto_retry\",\"success\":true}\n" +
+		"{\"type\":\"session\"}\n" +
+		"{\"id\":\"cfg-compaction\",\"type\":\"response\",\"command\":\"set_auto_compaction\",\"success\":true}\n"
+	sc := bufio.NewScanner(strings.NewReader(stream))
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	if err := (&RPC{}).awaitConfigAcks(cfg, sc); err != nil {
+		t.Fatalf("happy path: %v", err)
+	}
+
+	// One command rejected -> error naming it.
+	rejected := "{\"id\":\"cfg-compaction\",\"type\":\"response\",\"command\":\"set_auto_compaction\",\"success\":false,\"error\":\"unknown command\"}\n" +
+		"{\"id\":\"cfg-retry\",\"type\":\"response\",\"command\":\"set_auto_retry\",\"success\":true}\n"
+	sc2 := bufio.NewScanner(strings.NewReader(rejected))
+	sc2.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	if err := (&RPC{}).awaitConfigAcks(cfg, sc2); err == nil {
+		t.Fatal("expected error for rejected config command")
+	} else if !strings.Contains(err.Error(), "set_auto_compaction") {
+		t.Fatalf("error should name the rejected command: %v", err)
+	}
+
+	// EOF before all acks -> error.
+	partial := "{\"id\":\"cfg-retry\",\"type\":\"response\",\"command\":\"set_auto_retry\",\"success\":true}\n"
+	sc3 := bufio.NewScanner(strings.NewReader(partial))
+	sc3.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	if err := (&RPC{}).awaitConfigAcks(cfg, sc3); err == nil {
+		t.Fatal("expected error on EOF before all acks")
+	}
+}

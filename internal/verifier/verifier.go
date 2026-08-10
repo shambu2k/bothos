@@ -22,10 +22,10 @@ import (
 
 // Rule constants name the failure classes a verify round can produce.
 const (
-	RuleUncommitted   = "uncommitted_changes"
-	RuleVulnPresent   = "vuln_still_present"
-	RuleTestFailed    = "test_failed"
-	RuleScannerError  = "scanner_error"
+	RuleUncommitted  = "uncommitted_changes"
+	RuleVulnPresent  = "vuln_still_present"
+	RuleTestFailed   = "test_failed"
+	RuleScannerError = "scanner_error"
 )
 
 // Failure is one thing a verify round found wrong.
@@ -68,9 +68,12 @@ func (v Verifier) Verify(ctx context.Context, worktree string, claimed []runtime
 	var fails []Failure
 
 	// 1. Committed? The agent must commit; the harness never commits for it.
+	// .bothos/ is harness bookkeeping (the verdict file the agent writes
+	// while settling) and is deleted at the end of every run — it must never
+	// count as an uncommitted change, or every feedback round would report it.
 	if out, err := exec.CommandContext(ctx, "git", "-C", worktree, "status", "--porcelain").Output(); err != nil {
 		fails = append(fails, Failure{Rule: RuleScannerError, Detail: "git status: " + err.Error()})
-	} else if s := strings.TrimSpace(string(out)); s != "" {
+	} else if s := strings.TrimSpace(stripBothos(string(out))); s != "" {
 		fails = append(fails, Failure{
 			Rule:    RuleUncommitted,
 			Detail:  "worktree has uncommitted or untracked changes",
@@ -143,6 +146,21 @@ func Signature(f []Failure) string {
 
 func truncSnippet(s string, max int) string {
 	return truncStr(s, max)
+}
+
+// stripBothos removes .bothos/ entries from git status --porcelain output.
+// .bothos/ is harness bookkeeping (the verdict file the agent writes while
+// settling); it is not part of the agent's change and must not be reported
+// as an uncommitted/untracked change.
+func stripBothos(porcelain string) string {
+	var kept []string
+	for _, line := range strings.Split(porcelain, "\n") {
+		if strings.Contains(line, ".bothos/") || strings.HasPrefix(line, "?? .bothos/") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func truncStr(s string, max int) string {
