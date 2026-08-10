@@ -131,6 +131,41 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	}
 
 	enc := json.NewEncoder(stdin)
+
+	// A single shared scanner for the whole lifecycle. PI can emit very long
+	// single lines (large diffs, verbose tool output, JSON blobs); the bufio
+	// default max token is 64KB and will abort with "token too long" — raise
+	// it to 4MB up front. One scanner is mandatory: two scanners on the same
+	// pipe would drop bytes the first buffered past its cursor.
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+
+	// Disable PI's auto-compaction and auto-retry before the task starts.
+	// Both run on their own timers/backoff silently, emit no RPC event we
+	// consume, and can stall for tens of minutes while burning the wall cap
+	// — the observed 26-min silence after round-1 verifier feedback. The
+	// harness's verifier feedback loop is the only retry mechanism the agent
+	// needs, and per-run sessions stay small enough that compaction is never
+	// triggered when these are off.
+	//
+	// PI processes stdin lines concurrently (handleInputLine is fire-and-forget),
+	// so we write both config commands then wait for their acks before sending
+	// the prompt — otherwise the prompt could race ahead of the config.
+	cfg := []struct{ id, typ string }{
+		{"cfg-compaction", "set_auto_compaction"},
+		{"cfg-retry", "set_auto_retry"},
+	}
+	for _, c := range cfg {
+		if err := enc.Encode(map[string]any{"id": c.id, "type": c.typ, "enabled": false}); err != nil {
+			_ = cmd.Process.Kill()
+			return runtime.RunResult{}, fmt.Errorf("write %s: %w (%s)", c.typ, err, errBuf.String())
+		}
+	}
+	if err := r.awaitConfigAcks(cfg, sc); err != nil {
+		_ = cmd.Process.Kill()
+		return runtime.RunResult{}, err
+	}
+
 	// The initial prompt carries the structured task plus the verdict contract.
 	if err := enc.Encode(map[string]any{
 		"id":      "1",
@@ -140,13 +175,6 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		_ = cmd.Process.Kill()
 		return runtime.RunResult{}, fmt.Errorf("write prompt: %w (%s)", err, errBuf.String())
 	}
-
-	// PI can emit very long single lines (large diffs, verbose tool output,
-	// JSON blobs). The bufio default max token is 64KB and will abort the
-	// scan with "token too long" — raise it to 4MB like the pre-redesign
-	// scanner did. Failure here is a hard run error otherwise.
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	// Settle -> verdict -> optional single nudge. The loop stays open across a
 	// settle so the agent can be steered once if it omitted the verdict.
@@ -296,6 +324,75 @@ whether YOUR change caused it: fix what you broke, and do not chase
 pre-existing or environmental failures. The .bothos directory is harness
 bookkeeping; it is deleted when your run ends and must not be part of the
 change itself.`
+
+// awaitConfigAcks reads RPC stdout until the response (ack) for each config
+// command has arrived and succeeded, or the process exits. Because PI
+// dispatches stdin lines asynchronously, the agent prompt must not be sent
+// until these acks confirm the commands were applied; otherwise the agent
+// could start running before auto-compaction/auto-retry are disabled.
+// Uses the single shared scanner (created before the prompt) so no pipe
+// bytes are dropped between the ack phase and the settle phase.
+//
+// A silent or misbehaving PI must not hang the run: the ack phase is bounded
+// by a short timeout (startup config, not agent work — the wall cap applies
+// to the agent run itself).
+func (r *RPC) awaitConfigAcks(cfg []struct{ id, typ string }, sc *bufio.Scanner) error {
+	const ackTimeout = 15 * time.Second
+
+	// The scanner blocks on the pipe; drive it from a goroutine so the
+	// timeout below can fire and the Run context can cancel it.
+	type ackResult struct {
+		err error
+	}
+	done := make(chan ackResult, 1)
+	go func() {
+		done <- ackResult{err: r.awaitConfigAcksLoop(cfg, sc)}
+	}()
+
+	select {
+	case res := <-done:
+		return res.err
+	case <-time.After(ackTimeout):
+		return fmt.Errorf("pi rpc: timed out waiting for config acks (%d pending)", len(cfg))
+	}
+}
+
+func (r *RPC) awaitConfigAcksLoop(cfg []struct{ id, typ string }, sc *bufio.Scanner) error {
+	pending := make(map[string]bool, len(cfg))
+	for _, c := range cfg {
+		pending[c.id] = true
+	}
+
+	var lastErr error
+	for len(pending) > 0 && sc.Scan() {
+		var ev rpcEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		if ev.Type != "response" || ev.ID == "" {
+			continue
+		}
+		if !pending[ev.ID] {
+			continue
+		}
+		if ev.Success == nil || !*ev.Success {
+			lastErr = fmt.Errorf("pi rpc: %s rejected", ev.Command)
+			delete(pending, ev.ID)
+			continue
+		}
+		delete(pending, ev.ID)
+	}
+	if err := sc.Err(); err != nil && len(pending) > 0 {
+		return fmt.Errorf("pi rpc: config ack scan: %w", err)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("pi rpc: process exited before config acks (%d pending)", len(pending))
+	}
+	return nil
+}
 
 // awaitSettled scans RPC events until the agent is fully settled: an
 // agent_settled event, or agent_end with willRetry=false (fallback for pi

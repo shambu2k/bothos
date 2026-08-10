@@ -34,6 +34,12 @@ while IFS= read -r line || [ -n "$line" ]; do
 	echo "$line" >> "$LOG"
 
 	case "$line" in
+	*'"type":"set_auto_compaction"'*|*'"type":"set_auto_retry"'*)
+		# Startup config commands: ack them (real pi responds with
+		# success:true). The harness waits for these acks before the prompt.
+		id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+		echo "{\"id\":\"$id\",\"type\":\"response\",\"command\":\"cfg\",\"success\":true}"
+		;;
 	*'"type":"prompt"'*)
 		n=$((n + 1))
 
