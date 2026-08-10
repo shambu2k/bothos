@@ -127,27 +127,37 @@ Renovate `--dry-run` runs alongside, producing the available-update set. Join it
 against findings: a vulnerability with a known fixed version becomes an
 actionable upgrade candidate.
 
-### 5.2 Dependency upgrade PRs (with migration)
+### 5.2 Security-remediation PRs (harness around the agent)
 
-One finding → one run → one PR. Never batch; a failed batch is undiagnosable.
+A scheduled run queues **one run per repo** (not per finding). The harness gives
+the agent a sandboxed clone and lets it own the whole mechanical loop: scan
+(`osv-scanner`, with `trivy` available), triage, branch (`bot/<runID>-*`), fix,
+commit, and self-verify. The Go bot owns only policy — it no longer mints a
+candidate for the agent to execute.
 
-Agent input is structured, not "go find problems":
+The agent reports a structured verdict (`.bothos/verdict.json`, one of `done` /
+`done_unverified` / `blocked`, plus an optional `fixes` list naming the
+dependencies it claims to have upgraded). The harness holds the session open,
+reads the verdict, nudges once if it is missing, then runs an **external
+verifier** that deterministically re-scans the committed worktree with
+`osv-scanner`: it checks the worktree is committed, that each claimed fix is
+actually gone, and runs the repo's conventional test command. Failures are fed
+back as prompts for another round, bounded by a round limit and a stall detector
+(same failure signature twice → stop). The agent cannot grade its own homework.
 
-```
-package, current version, target version,
-changelog/release notes between them,
-graph nodes referencing the package,
-test command
-```
+- **Blocked** verdict → stand-down: no PR, the run is recorded failed with the
+  reason (`failure_reason`), and it is **not** retried by River.
+- **Verifier-red but committed** → still opens a **draft** PR whose body carries
+  a `Known failures (external verifier)` section. A run is never silently
+  presented as clean.
+- Unverified or nil verdict → draft PR with the agent's report, clearly marked.
 
-The agent (LLM) decides how to validate the change and reports a structured
-verdict (`.bothos/verdict.json`, one of `done` / `done_unverified` / `blocked`)
-with a summary and a verification note. The harness runs no test gate itself:
-it only holds the session open, reads the verdict, nudges once if it is
-missing, and maps the verdict to the PR. Unverified or blocked runs still open
-a **draft** PR whose body carries the agent's verification report — a run is
-never silently presented as clean. Never hide a failure behind a clean-looking
-PR.
+**Targeting comes from git state, never the envelope.** The agent's branch is
+read from git (`rev-parse --abbrev-ref HEAD`), the base from the clone's
+`origin/HEAD`, and the worktree is passed to the executor out-of-band. Nothing
+that answers "where does this land" is transported through the intent payload —
+this eliminated the seam-bug class where branch and base were derived in two
+different places and the worktree path was smuggled through the envelope.
 
 **Agent runtime (implemented).** The default runtime is PI via its documented
 `--mode rpc` subprocess, wrapped by the swappable `AgentRuntime` seam
@@ -160,15 +170,14 @@ PR.
   restarts and are recoverable.
 - Shutdown is graceful: on cancellation the process receives `SIGTERM`, bounded
   by a `WaitDelay`, before any hard kill — never an abrupt `SIGKILL`.
-- The **diff-gate** and the deterministic `open_pr` intent are built in Go
-  *after* the agent finishes; the agent contributes content only, the executor
-  supplies targeting.
-- The RPC session stays open across a **settle → verdict → optional single
-  nudge** cycle: after the agent settles, runpipe reads `.bothos/verdict.json`,
-  nudges once if it is missing, and annotates the PR body with the agent's
-  report. The harness runs **no test gate itself** — the post-run re-verify
-  gate (`ReTest`) was removed; validation is the agent's call and its result is
-  reported via the verdict.
+- The deterministic `open_pr` intent is built in Go *after* the agent finishes;
+  the agent contributes content only, the executor supplies all targeting.
+- The RPC session stays open across a **settle → verdict → verifier-feedback**
+  cycle: after the agent settles, runpipe reads `.bothos/verdict.json`, nudges
+  once if it is missing, and runs the external-verifier loop described above.
+- **Env hygiene:** the executor's write PAT is stripped from the agent
+  subprocess environment (`withoutSecrets` drops every `GITHUB_WRITE_TOKEN*`).
+  The sandbox holds no write credential, so exfiltration-by-push is closed.
 
 **River gotcha (bit us in production).** River's default job timeout is
 **1 minute**. Every long agent run was killed at ~60s — surfacing as a killed

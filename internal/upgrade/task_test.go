@@ -4,23 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/shambu2k/bothos/internal/ledger"
 )
-
-func TestUpgradeTaskFromCandidate(t *testing.T) {
-	c := ledger.Candidate{
-		RepoID: "acme/repo", Package: "adm-zip", CurrentVersion: "0.5.17",
-		TargetVersion: "0.6.0", Severity: "HIGH", AdvisoryID: "GHSA-abc",
-	}
-	task := UpgradeTaskFromCandidate(c, "npm test")
-	if task.Package != "adm-zip" || task.CurrentVersion != "0.5.17" || task.TargetVersion != "0.6.0" {
-		t.Fatalf("task fields mismatch: %+v", task)
-	}
-	if task.TestCommand != "npm test" {
-		t.Fatalf("test command not passed: %q", task.TestCommand)
-	}
-}
 
 func TestTestCommandFor(t *testing.T) {
 	dir := t.TempDir()

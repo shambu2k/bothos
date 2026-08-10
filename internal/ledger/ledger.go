@@ -143,6 +143,14 @@ func (p *Postgres) SetRunStatus(ctx context.Context, id string, status RunStatus
 	return err
 }
 
+// SetRunFailure marks a run failed with an auditing reason (failure_reason).
+// Used by runpipe for terminal stand-downs that must NOT be retried by River.
+func (p *Postgres) SetRunFailure(ctx context.Context, id, reason string) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE runs SET status='failed', failure_reason=$2, ended_at=now() WHERE id=$1`, id, reason)
+	return err
+}
+
 // ---------- capability gap ----------
 
 func (p *Postgres) RecordCapabilityGap(ctx context.Context, runID, requestedKind, context_ string) error {

@@ -19,9 +19,11 @@ type Env struct {
 
 func NewEnv(lookup func(string) string) *Env { return &Env{lookup: lookup} }
 
-// Resolve returns the PAT for an account+scope. Write scopes read
-// GITHUB_WRITE_TOKEN (or GITHUB_WRITE_TOKEN_<ACCOUNT>); the read-only token is
-// kept separate (GITHUB_READ_TOKEN) for the clone/scan path.
+// Resolve returns the PAT for an account+scope. Write scopes prefer the
+// per-account GITHUB_WRITE_TOKEN_<ACCOUNT>, falling back to the global
+// GITHUB_WRITE_TOKEN; the read-only token is kept separate (GITHUB_READ_TOKEN)
+// for the clone/scan path. An account-level token is an optional override, not
+// a hard requirement.
 func (e *Env) Resolve(ctx context.Context, accountID string, scope intent.TokenScope) (string, error) {
 	if scope == intent.TokenReadOnly {
 		if v := e.lookup("GITHUB_READ_TOKEN"); v != "" {
@@ -29,12 +31,16 @@ func (e *Env) Resolve(ctx context.Context, accountID string, scope intent.TokenS
 		}
 		return "", fmt.Errorf("no GITHUB_READ_TOKEN configured")
 	}
-	key := "GITHUB_WRITE_TOKEN"
 	if accountID != "" {
-		key += "_" + accountID
+		if v := e.lookup("GITHUB_WRITE_TOKEN_" + accountID); v != "" {
+			return v, nil
+		}
 	}
-	if v := e.lookup(key); v != "" {
+	if v := e.lookup("GITHUB_WRITE_TOKEN"); v != "" {
 		return v, nil
 	}
-	return "", fmt.Errorf("no write token configured for account %q (env %s)", accountID, key)
+	if accountID != "" {
+		return "", fmt.Errorf("no write token configured for account %q (GITHUB_WRITE_TOKEN_%s nor global GITHUB_WRITE_TOKEN)", accountID, accountID)
+	}
+	return "", fmt.Errorf("no GITHUB_WRITE_TOKEN configured")
 }

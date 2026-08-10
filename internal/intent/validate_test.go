@@ -43,14 +43,12 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 func openPREnvelope(t *testing.T, g Grant) Envelope {
 	t.Helper()
 	return Envelope{
-		SchemaVersion: 1,
+		SchemaVersion: int(SchemaVersion),
 		RunID:         g.RunID,
 		Kind:          KindOpenPR,
 		Payload: mustJSON(t, OpenPR{
-			Title:    "Bump acme to v1.1",
-			Body:     "Updates acme dep",
-			Worktree: "cmd/bump",
-			Topic:    "bump-dep",
+			Title: "Bump acme to v1.1",
+			Body:  "Updates acme dep",
 		}),
 	}
 }
@@ -89,7 +87,7 @@ func TestValidateUnknownKind(t *testing.T) {
 func TestValidateUnknownPayloadFieldRejected(t *testing.T) {
 	g := testGrant()
 	env := Envelope{
-		SchemaVersion: 1,
+		SchemaVersion: int(SchemaVersion),
 		RunID:         g.RunID,
 		Kind:          KindPostComment,
 		// sneaky unknown field: drift should be loud, not ignored
@@ -131,7 +129,7 @@ func TestValidateTokenScopeThresholds(t *testing.T) {
 			g.TokenScope = scope
 			g.Scope = Scope{Kind: ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
 		})
-		env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindPostReview,
+		env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview,
 			Payload: mustJSON(t, PostReview{Verdict: VerdictComment})}
 		_, err := Validate(env, g, testNow)
 		return err
@@ -174,7 +172,7 @@ func TestValidatePostReviewRejectedUnderScheduledScope(t *testing.T) {
 		g.TokenScope = TokenIssuesWrite
 		g.Scope = Scope{Kind: ScopeScheduled, BaseRef: "main"}
 	})
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindPostReview,
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview,
 		Payload: mustJSON(t, PostReview{Verdict: VerdictComment})}
 	_, err := Validate(env, g, testNow)
 	assertErr(t, err, ErrScopeMismatch)
@@ -189,13 +187,11 @@ func TestValidateNonscheduledScopeRequiresNumber(t *testing.T) {
 
 // ---------- Payload decode + sanitisation (step 4) ----------
 
-func TestOpenPRSanitisesTitleBodyTopic(t *testing.T) {
+func TestOpenPRSanitisesTitleBody(t *testing.T) {
 	g := testGrant()
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, OpenPR{
-		Title:    " Bump   acme   v1.1 ",
-		Body:     "fixes @bob, closes #12 (but scoped to #5)",
-		Worktree: "cmd/bump",
-		Topic:    "Hello World!",
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, OpenPR{
+		Title: " Bump   acme   v1.1 ",
+		Body:  "fixes @bob, closes #12 (but scoped to #5)",
 	})}
 	got, err := Validate(env, g, testNow)
 	if err != nil {
@@ -211,47 +207,27 @@ func TestOpenPRSanitisesTitleBodyTopic(t *testing.T) {
 	if !strings.Contains(p.Body, "ref #12") {
 		t.Errorf("body = %q, want defanged cross-issue close", p.Body)
 	}
-	if p.Topic != "hello-world" {
-		t.Errorf("topic = %q, want slug hello-world", p.Topic)
-	}
 }
 
 func TestOpenPRMissingTitle(t *testing.T) {
 	g := testGrant()
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, OpenPR{
-		Title: "", Worktree: "cmd/bump",
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, OpenPR{
+		Title: "",
 	})}
 	_, err := Validate(env, g, testNow)
 	assertErr(t, err, ErrMalformed)
 }
 
-func TestOpenPRMissingWorktree(t *testing.T) {
+func TestOpenPRUnknownFieldRejected(t *testing.T) {
+	// Worktree/Topic were removed from the payload shape (schema v2); a stale
+	// client smuggling one is a schema drift signal and must be rejected loudly.
 	g := testGrant()
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, OpenPR{
-		Title: "Bump", Worktree: "",
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, map[string]any{
+		"title":    "Bump",
+		"worktree": "cmd",
 	})}
 	_, err := Validate(env, g, testNow)
 	assertErr(t, err, ErrMalformed)
-}
-
-func TestOpenPRWorktreeAbsolutePathRejected(t *testing.T) {
-	g := testGrant()
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, OpenPR{
-		Title: "Bump", Worktree: "/etc/passwd",
-	})}
-	_, err := Validate(env, g, testNow)
-	assertErr(t, err, ErrMalformed)
-}
-
-func TestOpenPRWorktreeTraversalRejected(t *testing.T) {
-	for _, bad := range []string{"../evil", "cmd/../../evil", "a/../b"} {
-		g := testGrant()
-		env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindOpenPR, Payload: mustJSON(t, OpenPR{
-			Title: "Bump", Worktree: bad,
-		})}
-		_, err := Validate(env, g, testNow)
-		assertErr(t, err, ErrMalformed)
-	}
 }
 
 // ---------- No-approve verdict (rules worth arguing about) ----------
@@ -262,7 +238,7 @@ func TestPostReviewRejectsApproveVerdict(t *testing.T) {
 		g.TokenScope = TokenIssuesWrite
 		g.Scope = Scope{Kind: ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
 	})
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindPostReview,
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview,
 		Payload: json.RawMessage(`{"verdict":"approve","summary":"lgtm"}`)}
 	_, err := Validate(env, g, testNow)
 	assertErr(t, err, ErrMalformed)
@@ -276,7 +252,7 @@ func TestPostReviewCommentCountLimit(t *testing.T) {
 		g.Limits = DefaultLimits()
 		g.Limits.MaxComments = 2
 	})
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
 		Verdict: VerdictRequestChanges,
 		Comments: []ReviewComment{
 			{Path: "a.go", Line: 1, Side: "RIGHT", Body: "one"},
@@ -294,7 +270,7 @@ func TestPostReviewDefaultsInvalidSideToRight(t *testing.T) {
 		g.TokenScope = TokenIssuesWrite
 		g.Scope = Scope{Kind: ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
 	})
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
 		Verdict:  VerdictComment,
 		Comments: []ReviewComment{{Path: "a.go", Line: 3, Side: "WEIRD", Body: "x"}},
 	})}
@@ -313,7 +289,7 @@ func TestPostReviewZeroLineRejected(t *testing.T) {
 		g.TokenScope = TokenIssuesWrite
 		g.Scope = Scope{Kind: ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
 	})
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
 		Verdict:  VerdictComment,
 		Comments: []ReviewComment{{Path: "a.go", Line: 0, Side: "RIGHT", Body: "x"}},
 	})}
@@ -326,7 +302,7 @@ func TestPostCommentEmptyBodyRejected(t *testing.T) {
 		g.AllowedKinds = []Kind{KindPostComment}
 		g.TokenScope = TokenIssuesWrite
 	})
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindPostComment,
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostComment,
 		Payload: json.RawMessage(`{"body":"   "}`)}
 	_, err := Validate(env, g, testNow)
 	assertErr(t, err, ErrMalformed)
@@ -339,7 +315,7 @@ func TestSetLabelsLimit(t *testing.T) {
 		g.Limits = DefaultLimits()
 		g.Limits.MaxLabelsAdded = 2
 	})
-	env := Envelope{SchemaVersion: 1, RunID: g.RunID, Kind: KindSetLabels, Payload: mustJSON(t, SetLabels{
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindSetLabels, Payload: mustJSON(t, SetLabels{
 		Add: []string{"a", "b", "c"},
 	})}
 	_, err := Validate(env, g, testNow)
@@ -396,35 +372,6 @@ func TestSanitiseBodyTruncates(t *testing.T) {
 func TestSanitiseLineCollapsesWhitespace(t *testing.T) {
 	if s := sanitiseLine("a   b\tc  d", 100); s != "a b c d" {
 		t.Errorf("got %q", s)
-	}
-}
-
-func TestSlug(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"Hello World!", "hello-world"},
-		{"", "change"},
-		{"  --x--  ", "x"},
-		{strings.Repeat("a", 100), strings.Repeat("a", 40)},
-	}
-	for _, c := range cases {
-		if got := slug(c.in); got != c.want {
-			t.Errorf("slug(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-func TestSafeRelPath(t *testing.T) {
-	bad := []string{"/abs", "../x", "a/../b"}
-	good := []string{"cmd/bump", "cmd/", ".", "a/b/c"}
-	for _, p := range bad {
-		if safeRelPath(p) {
-			t.Errorf("safeRelPath(%q) = true, want false", p)
-		}
-	}
-	for _, p := range good {
-		if !safeRelPath(p) {
-			t.Errorf("safeRelPath(%q) = false, want true", p)
-		}
 	}
 }
 
@@ -511,7 +458,7 @@ func TestIdempotencyKeyDiffersByPayload(t *testing.T) {
 		openPREnvelope(t, g),
 		openPREnvelope(t, g), // same structural, but we change payload body below
 	}
-	envs[1].Payload = mustJSON(t, OpenPR{Title: "Different", Body: "...", Worktree: "cmd/x"})
+	envs[1].Payload = mustJSON(t, OpenPR{Title: "Different", Body: "..."})
 	if IdempotencyKey(envs[0], g) == IdempotencyKey(envs[1], g) {
 		t.Fatal("different payloads must yield different idempotency keys")
 	}

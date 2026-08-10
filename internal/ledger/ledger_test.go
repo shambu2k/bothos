@@ -105,6 +105,29 @@ func TestInsertRunAndStatusTransition(t *testing.T) {
 	}
 }
 
+func TestSetRunFailureRecordsReason(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-blk")
+
+	if err := st.SetRunFailure(ctx, "run-blk", "agent blocked: cannot migrate: API removed"); err != nil {
+		t.Fatalf("set failure: %v", err)
+	}
+	var status, reason string
+	var ended bool
+	if err := st.pool.QueryRow(ctx,
+		`SELECT status, failure_reason, ended_at IS NOT NULL FROM runs WHERE id=$1`, "run-blk").
+		Scan(&status, &reason, &ended); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if status != "failed" || !ended {
+		t.Fatalf("status=%q ended=%v, want failed + ended_at", status, ended)
+	}
+	if reason != "agent blocked: cannot migrate: API removed" {
+		t.Fatalf("failure_reason = %q", reason)
+	}
+}
+
 func TestRecordCapabilityGap(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

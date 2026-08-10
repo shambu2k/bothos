@@ -12,9 +12,11 @@ package executor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shambu2k/bothos/internal/intent"
+	"github.com/shambu2k/bothos/internal/upgrade"
 )
 
 // Credential is a resolved fine-grained PAT bound to one resource owner at one
@@ -119,8 +121,10 @@ func NewExecutor(store CredentialStore, ledger Ledger, gh GitHubWriter, diffs Di
 
 // Execute validates the envelope against the grant, dedupes by derived
 // idempotency key, resolves the tier-appropriate credential, and performs
-// exactly one write.
-func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Grant) (Result, error) {
+// exactly one write. worktree is the sandbox worktree, passed out-of-band:
+// the branch and base it must push/open against are read from git state, never
+// from the envelope.
+func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Grant, worktree string) (Result, error) {
 	// Enforcement point: re-validate even though the worker validated at
 	// dispatch. The payload returned is the sanitised one — that is what gets
 	// written, never the raw envelope.
@@ -145,24 +149,36 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 	var ref string
 	switch v := p.(type) {
 	case intent.OpenPR:
-		if err := e.checkWorktreeDiff(ctx, g, v.Worktree); err != nil {
+		if err := e.checkWorktreeDiff(ctx, g, worktree); err != nil {
 			return Result{}, err
 		}
-		branch := "bot/" + g.RunID + "-" + v.Topic
-		if err := e.gh.PushBranch(ctx, cred, branch, v.Worktree); err != nil {
+		// The branch and base both come from git state — the agent created the
+		// branch, the clone's origin/HEAD names the base. Never transported.
+		branch, err := upgrade.CurrentBranch(ctx, worktree)
+		if err != nil {
+			return Result{}, fmt.Errorf("current branch: %w", err)
+		}
+		if !strings.HasPrefix(branch, "bot/"+g.RunID+"-") {
+			return Result{}, fmt.Errorf("agent branch %q must be bot/<runID>-*", branch)
+		}
+		base, err := upgrade.BaseBranch(ctx, worktree)
+		if err != nil {
+			return Result{}, fmt.Errorf("base branch: %w", err)
+		}
+		if err := e.gh.PushBranch(ctx, cred, branch, worktree); err != nil {
 			return Result{}, fmt.Errorf("push branch: %w", err)
 		}
 		ref, err = e.gh.OpenPR(ctx, cred, OpenPRWrite{
 			Branch: branch,
-			Base:   g.Scope.BaseRef,
+			Base:   base,
 			Title:  v.Title,
 			Body:   v.Body,
 			Draft:  v.Draft,
 		})
 
 	case intent.UpdatePR:
-		if v.Worktree != "" {
-			if err := e.checkWorktreeDiff(ctx, g, v.Worktree); err != nil {
+		if worktree != "" {
+			if err := e.checkWorktreeDiff(ctx, g, worktree); err != nil {
 				return Result{}, err
 			}
 		}

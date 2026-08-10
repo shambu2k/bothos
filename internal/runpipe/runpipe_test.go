@@ -3,6 +3,7 @@ package runpipe
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/shambu2k/bothos/internal/executor"
@@ -12,13 +13,20 @@ import (
 )
 
 type fakeStore struct {
-	run  ledger.Run
-	last ledger.RunStatus
+	run           ledger.Run
+	last          ledger.RunStatus
+	failedReason  string
+	failureCalled bool
 }
 
 func (s *fakeStore) RunByID(ctx context.Context, id string) (ledger.Run, error) { return s.run, nil }
 func (s *fakeStore) SetRunStatus(ctx context.Context, id string, st ledger.RunStatus) error {
 	s.last = st
+	return nil
+}
+func (s *fakeStore) SetRunFailure(ctx context.Context, id, reason string) error {
+	s.failureCalled = true
+	s.failedReason = reason
 	return nil
 }
 
@@ -29,16 +37,29 @@ func (s fakeSandbox) Exec(ctx context.Context, c string, a ...string) (runtime.O
 	return runtime.Output{}, nil
 }
 
-type fakeAgent struct{ intents []intent.Envelope }
-
-func (a fakeAgent) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, error) {
-	return runtime.RunResult{Intents: a.intents}, nil
+type fakeAgent struct {
+	intents []intent.Envelope
+	verdict *runtime.Verdict
 }
 
-type fakeExec struct{ result executor.Result }
+func (a fakeAgent) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, error) {
+	return runtime.RunResult{Intents: a.intents, Verdict: a.verdict}, nil
+}
 
-func (e fakeExec) Execute(ctx context.Context, env intent.Envelope, g intent.Grant) (executor.Result, error) {
+type fakeExec struct {
+	result      executor.Result
+	lastWorktree string
+}
+
+func (e *fakeExec) Execute(ctx context.Context, env intent.Envelope, g intent.Grant, worktree string) (executor.Result, error) {
+	e.lastWorktree = worktree
 	return e.result, nil
+}
+
+func openPREnvelope(t *testing.T, runID string) intent.Envelope {
+	t.Helper()
+	payload, _ := json.Marshal(intent.OpenPR{Title: "x", Body: "y", Draft: true})
+	return intent.Envelope{SchemaVersion: int(intent.SchemaVersion), RunID: runID, Kind: intent.KindOpenPR, Payload: payload}
 }
 
 func TestPipelineHappyPath(t *testing.T) {
@@ -48,18 +69,17 @@ func TestPipelineHappyPath(t *testing.T) {
 		Scope: intent.Scope{Kind: intent.ScopeScheduled, BaseRef: "main"},
 	}
 	grantJSON, _ := json.Marshal(grant)
-	metaJSON, _ := json.Marshal(UpgradeMeta{Package: "adm-zip", From: "0.5.17", To: "0.6.0", AdvisoryID: "GHSA-a"})
+	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
 
 	st := &fakeStore{run: ledger.Run{ID: "r1", Grant: grantJSON, Meta: metaJSON, Decision: "allow"}}
-	dir := "/tmp/fake-worktree"
-	sb := fakeSandbox{wt: dir}
+	sb := fakeSandbox{wt: "/tmp/fake-worktree"}
+	ex := &fakeExec{result: executor.Result{GitHubRef: "acme/repo#9"}}
 
 	p := &Pipeline{
 		Store:   st,
-		Agent:   fakeAgent{intents: []intent.Envelope{{RunID: "r1", Kind: "open_pr", Payload: json.RawMessage(`{"topic":"upgrade-adm-zip-0.6.0"}`)}}},
-		Exec:    fakeExec{result: executor.Result{GitHubRef: "acme/repo#9"}},
-		Sandbox: func(ctx context.Context, repo, branch, base string) (runtime.Sandbox, error) { return sb, nil },
-		Commit:  func(ctx context.Context, w, b string) error { return nil },
+		Agent:   fakeAgent{intents: []intent.Envelope{openPREnvelope(t, "r1")}},
+		Exec:    ex,
+		Sandbox: func(ctx context.Context, repo string) (runtime.Sandbox, error) { return sb, nil },
 	}
 
 	ref, err := p.Run(context.Background(), "r1")
@@ -72,17 +92,21 @@ func TestPipelineHappyPath(t *testing.T) {
 	if st.last != ledger.RunSucceeded {
 		t.Fatalf("expected succeeded, got %q", st.last)
 	}
+	// The executor received the sandbox worktree out-of-band.
+	if ex.lastWorktree != "/tmp/fake-worktree" {
+		t.Fatalf("executor worktree = %q, want /tmp/fake-worktree", ex.lastWorktree)
+	}
 }
 
 func TestPipelineFailsWithoutIntent(t *testing.T) {
 	grantJSON, _ := json.Marshal(intent.Grant{Repo: intent.Repo{Owner: "acme", Name: "repo"}})
-	metaJSON, _ := json.Marshal(UpgradeMeta{Package: "adm-zip", From: "0.5.17", To: "0.6.0"})
+	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
 	st := &fakeStore{run: ledger.Run{ID: "r2", Grant: grantJSON, Meta: metaJSON}}
 	p := &Pipeline{
 		Store: st,
-		Agent: fakeAgent{}, // no intents
-		Exec:  fakeExec{},
-		Sandbox: func(ctx context.Context, r, b, base string) (runtime.Sandbox, error) {
+		Agent: fakeAgent{}, // no intents, no verdict
+		Exec:  &fakeExec{},
+		Sandbox: func(ctx context.Context, r string) (runtime.Sandbox, error) {
 			return fakeSandbox{"/tmp/x"}, nil
 		},
 	}
@@ -91,5 +115,42 @@ func TestPipelineFailsWithoutIntent(t *testing.T) {
 	}
 	if st.last != ledger.RunFailed {
 		t.Fatalf("expected failed, got %q", st.last)
+	}
+	if st.failureCalled {
+		t.Fatal("SetRunFailure should not be called without a blocked verdict")
+	}
+}
+
+func TestPipelineBlockedStandDownIsTerminal(t *testing.T) {
+	// An agent that stands down (blocked verdict, no open_pr intent) must
+	// record the failure reason and return nil — a stated run, NOT a River
+	// retry.
+	grantJSON, _ := json.Marshal(intent.Grant{Repo: intent.Repo{Owner: "acme", Name: "repo"}})
+	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
+	st := &fakeStore{run: ledger.Run{ID: "r3", Grant: grantJSON, Meta: metaJSON}}
+	ex := &fakeExec{}
+	p := &Pipeline{
+		Store: st,
+		Agent: fakeAgent{verdict: &runtime.Verdict{Status: runtime.VerdictBlocked, Summary: "cannot migrate: API removed"}},
+		Exec:  ex,
+		Sandbox: func(ctx context.Context, r string) (runtime.Sandbox, error) {
+			return fakeSandbox{"/tmp/x"}, nil
+		},
+	}
+	ref, err := p.Run(context.Background(), "r3")
+	if err != nil {
+		t.Fatalf("stand-down must not error: %v", err)
+	}
+	if ref != "" {
+		t.Fatalf("stand-down ref = %q, want empty", ref)
+	}
+	if !st.failureCalled {
+		t.Fatal("SetRunFailure not called on stand-down")
+	}
+	if !strings.Contains(st.failedReason, "agent blocked: cannot migrate") {
+		t.Fatalf("failure reason = %q", st.failedReason)
+	}
+	if ex.lastWorktree != "" {
+		t.Fatal("executor must not be called on stand-down")
 	}
 }
