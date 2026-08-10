@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shambu2k/bothos/internal/executor"
 	"github.com/shambu2k/bothos/internal/intent"
@@ -64,9 +65,11 @@ func openPREnvelope(t *testing.T, runID string) intent.Envelope {
 
 func TestPipelineHappyPath(t *testing.T) {
 	grant := intent.Grant{
-		RunID: "r1",
-		Repo:  intent.Repo{Owner: "acme", Name: "repo"},
-		Scope: intent.Scope{Kind: intent.ScopeScheduled, BaseRef: "main"},
+		RunID:     "r1",
+		Repo:      intent.Repo{Owner: "acme", Name: "repo"},
+		Scope:     intent.Scope{Kind: intent.ScopeScheduled, BaseRef: "main"},
+		IssuedAt:  time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(45 * time.Minute),
 	}
 	grantJSON, _ := json.Marshal(grant)
 	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
@@ -99,7 +102,11 @@ func TestPipelineHappyPath(t *testing.T) {
 }
 
 func TestPipelineFailsWithoutIntent(t *testing.T) {
-	grantJSON, _ := json.Marshal(intent.Grant{Repo: intent.Repo{Owner: "acme", Name: "repo"}})
+	grantJSON, _ := json.Marshal(intent.Grant{
+		Repo:      intent.Repo{Owner: "acme", Name: "repo"},
+		IssuedAt:  time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(45 * time.Minute),
+	})
 	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
 	st := &fakeStore{run: ledger.Run{ID: "r2", Grant: grantJSON, Meta: metaJSON}}
 	p := &Pipeline{
@@ -116,8 +123,11 @@ func TestPipelineFailsWithoutIntent(t *testing.T) {
 	if st.last != ledger.RunFailed {
 		t.Fatalf("expected failed, got %q", st.last)
 	}
-	if st.failureCalled {
-		t.Fatal("SetRunFailure should not be called without a blocked verdict")
+	if !st.failureCalled {
+		t.Fatal("SetRunFailure must record the reason for every failure (diagnostics)")
+	}
+	if !strings.Contains(st.failedReason, "no open_pr intent produced") {
+		t.Fatalf("failure reason = %q", st.failedReason)
 	}
 }
 
@@ -125,7 +135,11 @@ func TestPipelineBlockedStandDownIsTerminal(t *testing.T) {
 	// An agent that stands down (blocked verdict, no open_pr intent) must
 	// record the failure reason and return nil — a stated run, NOT a River
 	// retry.
-	grantJSON, _ := json.Marshal(intent.Grant{Repo: intent.Repo{Owner: "acme", Name: "repo"}})
+	grantJSON, _ := json.Marshal(intent.Grant{
+		Repo:      intent.Repo{Owner: "acme", Name: "repo"},
+		IssuedAt:  time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(45 * time.Minute),
+	})
 	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
 	st := &fakeStore{run: ledger.Run{ID: "r3", Grant: grantJSON, Meta: metaJSON}}
 	ex := &fakeExec{}
@@ -152,5 +166,40 @@ func TestPipelineBlockedStandDownIsTerminal(t *testing.T) {
 	}
 	if ex.lastWorktree != "" {
 		t.Fatal("executor must not be called on stand-down")
+	}
+}
+
+// TestPipelineFailsFastOnExpiredGrant: a stale grant must fail the run BEFORE
+// the agent starts (no wasted token spend) and record the reason.
+func TestPipelineFailsFastOnExpiredGrant(t *testing.T) {
+	grantJSON, _ := json.Marshal(intent.Grant{
+		Repo:      intent.Repo{Owner: "acme", Name: "repo"},
+		IssuedAt:  time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-time.Hour), // already expired
+	})
+	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
+	st := &fakeStore{run: ledger.Run{ID: "r4", Grant: grantJSON, Meta: metaJSON}}
+	agentRan := false
+	p := &Pipeline{
+		Store: st,
+		Agent: fakeAgent{},
+		Exec:  &fakeExec{},
+		Sandbox: func(ctx context.Context, r string) (runtime.Sandbox, error) {
+			agentRan = true
+			return fakeSandbox{"/tmp/x"}, nil
+		},
+	}
+	ref, err := p.Run(context.Background(), "r4")
+	if err == nil {
+		t.Fatal("expected error for expired grant")
+	}
+	if agentRan {
+		t.Fatal("agent must not run for an expired grant")
+	}
+	if ref != "" {
+		t.Fatalf("expected no ref, got %q", ref)
+	}
+	if !strings.Contains(st.failedReason, "expired") {
+		t.Fatalf("failure reason missing 'expired': %q", st.failedReason)
 	}
 }
