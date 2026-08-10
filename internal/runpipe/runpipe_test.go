@@ -18,6 +18,7 @@ type fakeStore struct {
 	last          ledger.RunStatus
 	failedReason  string
 	failureCalled bool
+	ref           string
 }
 
 func (s *fakeStore) RunByID(ctx context.Context, id string) (ledger.Run, error) { return s.run, nil }
@@ -28,6 +29,10 @@ func (s *fakeStore) SetRunStatus(ctx context.Context, id string, st ledger.RunSt
 func (s *fakeStore) SetRunFailure(ctx context.Context, id, reason string) error {
 	s.failureCalled = true
 	s.failedReason = reason
+	return nil
+}
+func (s *fakeStore) SetRunRef(ctx context.Context, id, ref string) error {
+	s.ref = ref
 	return nil
 }
 
@@ -48,7 +53,7 @@ func (a fakeAgent) Run(ctx context.Context, in runtime.RunInput) (runtime.RunRes
 }
 
 type fakeExec struct {
-	result      executor.Result
+	result       executor.Result
 	lastWorktree string
 }
 

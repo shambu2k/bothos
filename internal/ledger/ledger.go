@@ -136,10 +136,25 @@ func (p *Postgres) RunByID(ctx context.Context, id string) (Run, error) {
 }
 
 // SetRunStatus transitions a run; a terminal call also stamps ended_at.
+// The running transition stamps started_at once (first time only), so the
+// ledger records when the run actually began executing, not when it was
+// inserted as queued.
 func (p *Postgres) SetRunStatus(ctx context.Context, id string, status RunStatus) error {
 	_, err := p.pool.Exec(ctx, `
-		UPDATE runs SET status=$2, ended_at=CASE WHEN $2 IN ('succeeded','failed','denied') THEN now() ELSE ended_at END
+		UPDATE runs SET
+			status=$2,
+			started_at=CASE WHEN $2='running' AND started_at IS NULL THEN now() ELSE started_at END,
+			ended_at=CASE WHEN $2 IN ('succeeded','failed','denied') THEN now() ELSE ended_at END
 		WHERE id=$1`, id, status)
+	return err
+}
+
+// SetRunRef records the external artifact a successful run produced (e.g. the
+// GitHub PR reference "owner/repo#N") on the run row, so "did it open a PR?"
+// is a single ledger query instead of a GitHub API call.
+func (p *Postgres) SetRunRef(ctx context.Context, id, ref string) error {
+	_, err := p.pool.Exec(ctx,
+		`UPDATE runs SET github_ref=$2 WHERE id=$1`, id, ref)
 	return err
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/shambu2k/bothos/internal/intent"
 	"github.com/shambu2k/bothos/internal/scan"
@@ -269,5 +270,56 @@ func TestRunByIDScheduled(t *testing.T) {
 	}
 	if r.Trigger != "scheduled" || r.ScopeNumber != 0 {
 		t.Fatalf("unexpected run: %+v", r)
+	}
+}
+
+func TestRunStartedAtStampedOnceOnRunning(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-start")
+
+	// queued -> running stamps started_at once.
+	if err := st.SetRunStatus(ctx, "run-start", RunRunning); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	var started time.Time
+	if err := st.pool.QueryRow(ctx,
+		`SELECT started_at FROM runs WHERE id=$1`, "run-start").Scan(&started); err != nil {
+		t.Fatalf("read started_at: %v", err)
+	}
+	if started.IsZero() {
+		t.Fatal("started_at not stamped on running transition")
+	}
+
+	// A second running write must not move it (retried worker pickup).
+	time.Sleep(5 * time.Millisecond)
+	if err := st.SetRunStatus(ctx, "run-start", RunRunning); err != nil {
+		t.Fatalf("running again: %v", err)
+	}
+	var again time.Time
+	if err := st.pool.QueryRow(ctx,
+		`SELECT started_at FROM runs WHERE id=$1`, "run-start").Scan(&again); err != nil {
+		t.Fatalf("read again: %v", err)
+	}
+	if !again.Equal(started) {
+		t.Fatalf("started_at moved on second running write: %v -> %v", started, again)
+	}
+}
+
+func TestSetRunRefPersists(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-ref")
+
+	if err := st.SetRunRef(ctx, "run-ref", "Jivanex/JIVA_BACKEND#48"); err != nil {
+		t.Fatalf("set ref: %v", err)
+	}
+	var ref string
+	if err := st.pool.QueryRow(ctx,
+		`SELECT COALESCE(github_ref,'') FROM runs WHERE id=$1`, "run-ref").Scan(&ref); err != nil {
+		t.Fatalf("read ref: %v", err)
+	}
+	if ref != "Jivanex/JIVA_BACKEND#48" {
+		t.Fatalf("github_ref = %q", ref)
 	}
 }
