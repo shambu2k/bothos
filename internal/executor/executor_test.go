@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +158,44 @@ func mustEnv(t *testing.T, g intent.Grant, kind intent.Kind, payload any) intent
 	return intent.Envelope{SchemaVersion: int(intent.SchemaVersion), RunID: g.RunID, Kind: kind, Payload: b}
 }
 
+// newGitWorktree builds a real temp git repo cloned from a bare seed, checked
+// out on the given work branch, with origin/HEAD pointing at baseBranch. This
+// is how the executor's branch/base-from-git-state path is exercised for real.
+func newGitWorktree(t *testing.T, branch, baseBranch string) string {
+	t.Helper()
+	gitDir := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git")
+		cmd.Args = append(cmd.Args, "-C", dir)
+		cmd.Args = append(cmd.Args, args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v in %s: %v (%s)", args, dir, err, out)
+		}
+	}
+	seed := t.TempDir()
+	gitDir(seed, "init", "-q", "-b", baseBranch)
+	gitDir(seed, "config", "user.email", "t@example.com")
+	gitDir(seed, "config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(seed, "file.txt"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitDir(seed, "add", ".")
+	gitDir(seed, "commit", "-qm", "base")
+
+	origin := t.TempDir()
+	gitDir(origin, "init", "-q", "--bare", "-b", baseBranch)
+	gitDir(seed, "remote", "add", "origin", origin)
+	gitDir(seed, "push", "-qu", "origin", baseBranch)
+
+	wt := filepath.Join(t.TempDir(), "repo")
+	cmd := exec.Command("git", "clone", "-q", origin, wt)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v (%s)", err, out)
+	}
+	gitDir(wt, "checkout", "-b", branch)
+	return wt
+}
+
 func assertErr(t *testing.T, err error, want error) {
 	t.Helper()
 	if !errors.Is(err, want) {
@@ -171,10 +212,10 @@ func TestExecuteRevalidatesEnvelope(t *testing.T) {
 	g := testGrant(func(g *intent.Grant) {
 		g.Scope = intent.Scope{Kind: intent.ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
 	})
-	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x", "worktree": "cmd"})
+	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x"})
 	w := &fakeWriter{}
 	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, &fakeDiff{}, testNow)
-	_, err := ex.Execute(context.Background(), env, g)
+	_, err := ex.Execute(context.Background(), env, g, "")
 	assertErr(t, err, intent.ErrScopeMismatch)
 	if w.callCount != 0 {
 		t.Fatalf("writer called %d times on rejected intent", w.callCount)
@@ -183,10 +224,10 @@ func TestExecuteRevalidatesEnvelope(t *testing.T) {
 
 func TestExecuteRejectsUngrantedKind(t *testing.T) {
 	g := testGrant(func(g *intent.Grant) { g.AllowedKinds = []intent.Kind{intent.KindPostComment} })
-	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x", "worktree": "cmd"})
+	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x"})
 	w := &fakeWriter{}
 	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, &fakeDiff{}, testNow)
-	_, err := ex.Execute(context.Background(), env, g)
+	_, err := ex.Execute(context.Background(), env, g, "")
 	assertErr(t, err, intent.ErrCapabilityMissing)
 	if w.callCount != 0 {
 		t.Fatalf("writer called on ungranted intent")
@@ -198,14 +239,18 @@ func TestExecuteRejectsUngrantedKind(t *testing.T) {
 func TestExecuteOpenPRFlow(t *testing.T) {
 	g := testGrant()
 	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{
-		"title": "Bump acme to v1.1", "body": "thanks @bob", "worktree": "cmd/bump", "topic": "bump-dep",
+		"title": "Bump acme to v1.1", "body": "thanks @bob",
 	})
 	store := &fakeStore{}
 	led := &fakeLedger{}
 	w := &fakeWriter{}
 	ex := newExecutor(store, led, w, &fakeDiff{}, testNow)
 
-	res, err := ex.Execute(context.Background(), env, g)
+	// The agent checked a real bot/<runID>-* branch out of a clone whose
+	// origin/HEAD is main; the executor reads both from git state.
+	worktree := newGitWorktree(t, "bot/run-1-fix-security", "main")
+
+	res, err := ex.Execute(context.Background(), env, g, worktree)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -215,15 +260,15 @@ func TestExecuteOpenPRFlow(t *testing.T) {
 	if res.GitHubRef != "shambu2k/repo#123" {
 		t.Fatalf("ref = %q", res.GitHubRef)
 	}
-	// writer got the grant-derived branch and base, never agent-chosen
+	// writer got the git-derived branch and base, never agent-chosen
 	if w.lastOpenPR == nil {
 		t.Fatal("OpenPR not called")
 	}
-	if w.lastOpenPR.Branch != "bot/run-1-bump-dep" {
-		t.Errorf("branch = %q, want bot/run-1-bump-dep", w.lastOpenPR.Branch)
+	if w.lastOpenPR.Branch != "bot/run-1-fix-security" {
+		t.Errorf("branch = %q, want git-derived bot/run-1-fix-security", w.lastOpenPR.Branch)
 	}
 	if w.lastOpenPR.Base != "main" {
-		t.Errorf("base = %q, want main", w.lastOpenPR.Base)
+		t.Errorf("base = %q, want origin/HEAD main", w.lastOpenPR.Base)
 	}
 	// the mention survived sanitisation as a backticked (non-notifying) form
 	if !strings.Contains(w.lastOpenPR.Body, "`@bob`") {
@@ -241,30 +286,51 @@ func TestExecuteOpenPRFlow(t *testing.T) {
 	}
 }
 
-func TestExecuteBranchDefaultsWhenNoTopic(t *testing.T) {
+func TestExecuteBaseResolvedFromOriginHEAD(t *testing.T) {
+	// The base comes from the clone's origin/HEAD, not from any value the
+	// agent or a payload transported. A seed repo whose default branch is
+	// "develop" must produce Base == "develop".
 	g := testGrant()
-	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{
-		"title": "x", "worktree": "cmd",
-	})
+	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x"})
 	w := &fakeWriter{}
 	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, &fakeDiff{}, testNow)
-	if _, err := ex.Execute(context.Background(), env, g); err != nil {
+
+	worktree := newGitWorktree(t, "bot/run-1-fix", "develop")
+	if _, err := ex.Execute(context.Background(), env, g, worktree); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if w.lastOpenPR.Branch != "bot/run-1-change" {
-		t.Errorf("branch = %q, want bot/run-1-change", w.lastOpenPR.Branch)
+	if w.lastOpenPR.Base != "develop" {
+		t.Errorf("base = %q, want 'develop' from origin/HEAD", w.lastOpenPR.Base)
+	}
+}
+
+func TestExecuteRejectsWrongBranchPrefix(t *testing.T) {
+	// The agent must have created a bot/<runID>-* branch. A worktree checked
+	// out on any other branch is rejected before any write.
+	g := testGrant()
+	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x"})
+	w := &fakeWriter{}
+	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, &fakeDiff{}, testNow)
+
+	worktree := newGitWorktree(t, "feature", "main")
+	_, err := ex.Execute(context.Background(), env, g, worktree)
+	if err == nil || !strings.Contains(err.Error(), "must be bot/<runID>-*") {
+		t.Fatalf("err = %v, want branch-prefix rejection", err)
+	}
+	if w.callCount != 0 {
+		t.Fatal("writer called despite wrong branch")
 	}
 }
 
 func TestExecuteOpenPRDeniedDiff(t *testing.T) {
 	g := testGrant()
-	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x", "worktree": "cmd"})
+	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x"})
 	diffs := &fakeDiff{diff: func(ctx context.Context, runID, wt string) (intent.Diff, error) {
 		return intent.Diff{Files: []string{".github/workflows/deploy.yml"}}, nil
 	}}
 	w := &fakeWriter{}
 	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, diffs, testNow)
-	_, err := ex.Execute(context.Background(), env, g)
+	_, err := ex.Execute(context.Background(), env, g, "")
 	assertErr(t, err, intent.ErrDeniedPath)
 	if w.callCount != 0 {
 		t.Fatal("writer called despite denied diff")
@@ -275,13 +341,13 @@ func TestExecuteOpenPRDeniedDiff(t *testing.T) {
 
 func TestExecuteDedupesOnLedgerHit(t *testing.T) {
 	g := testGrant()
-	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x", "worktree": "cmd"})
+	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x"})
 	led := &fakeLedger{lookup: func(ctx context.Context, key string) (string, bool, error) {
 		return "shambu2k/repo#123", true, nil
 	}}
 	w := &fakeWriter{}
 	ex := newExecutor(&fakeStore{}, led, w, &fakeDiff{}, testNow)
-	res, err := ex.Execute(context.Background(), env, g)
+	res, err := ex.Execute(context.Background(), env, g, "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -303,13 +369,13 @@ func TestExecuteDedupesOnLedgerHit(t *testing.T) {
 
 func TestExecuteTokenResolutionFailureStopsWrite(t *testing.T) {
 	g := testGrant()
-	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x", "worktree": "cmd"})
+	env := mustEnv(t, g, intent.KindOpenPR, map[string]any{"title": "x"})
 	store := &fakeStore{resolve: func(ctx context.Context, a string, s intent.TokenScope) (string, error) {
 		return "", errors.New("keyring unreachable")
 	}}
 	w := &fakeWriter{}
 	ex := newExecutor(store, &fakeLedger{}, w, &fakeDiff{}, testNow)
-	_, err := ex.Execute(context.Background(), env, g)
+	_, err := ex.Execute(context.Background(), env, g, "")
 	if err == nil || !strings.Contains(err.Error(), "resolve token") {
 		t.Fatalf("err = %v, want wrapped resolve token error", err)
 	}
@@ -327,7 +393,7 @@ func TestExecuteTokenScopeDrivesResolveCall(t *testing.T) {
 	env := mustEnv(t, g, intent.KindSetLabels, map[string]any{"add": []string{"kind/upgrade"}})
 	store := &fakeStore{}
 	ex := newExecutor(store, &fakeLedger{}, &fakeWriter{}, &fakeDiff{}, testNow)
-	if _, err := ex.Execute(context.Background(), env, g); err != nil {
+	if _, err := ex.Execute(context.Background(), env, g, ""); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if len(store.calls) != 1 || store.calls[0].scope != intent.TokenIssuesWrite {
@@ -348,7 +414,7 @@ func TestExecutePostReviewUsesScopeNumber(t *testing.T) {
 	})
 	w := &fakeWriter{}
 	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, &fakeDiff{}, testNow)
-	if _, err := ex.Execute(context.Background(), env, g); err != nil {
+	if _, err := ex.Execute(context.Background(), env, g, ""); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if w.callCount != 1 {
@@ -365,7 +431,7 @@ func TestExecutePostCommentEmptyBodyStopsBeforeWrite(t *testing.T) {
 		Payload: json.RawMessage(`{"body":"   "}`)}
 	w := &fakeWriter{}
 	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, &fakeDiff{}, testNow)
-	_, err := ex.Execute(context.Background(), env, g)
+	_, err := ex.Execute(context.Background(), env, g, "")
 	assertErr(t, err, intent.ErrMalformed)
 	if w.callCount != 0 {
 		t.Fatal("writer called for empty comment")

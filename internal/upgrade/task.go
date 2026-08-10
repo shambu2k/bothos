@@ -7,22 +7,7 @@ package upgrade
 import (
 	"os"
 	"path/filepath"
-
-	"github.com/shambu2k/bothos/internal/ledger"
-	"github.com/shambu2k/bothos/internal/runtime"
 )
-
-// UpgradeTaskFromCandidate maps a candidate (a finding with a fix) to the
-// structured task the agent runtime consumes. testCmd is a best-effort hint the
-// agent may refine; the worker re-verifies the real result before any PR.
-func UpgradeTaskFromCandidate(c ledger.Candidate, testCmd string) runtime.UpgradeTask {
-	return runtime.UpgradeTask{
-		Package:        c.Package,
-		CurrentVersion: c.CurrentVersion,
-		TargetVersion:  c.TargetVersion,
-		TestCommand:    testCmd,
-	}
-}
 
 // TestCommandFor detects a repo's conventional test command from its manifest.
 // Returns "" when nothing recognisable is present (the agent then decides).

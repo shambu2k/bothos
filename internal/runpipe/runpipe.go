@@ -26,30 +26,32 @@ type UpgradeMeta = upgrade.UpgradeMeta
 type Store interface {
 	RunByID(ctx context.Context, id string) (ledger.Run, error)
 	SetRunStatus(ctx context.Context, id string, s ledger.RunStatus) error
+	SetRunFailure(ctx context.Context, id, reason string) error
 }
 
 // Executor is the write seam (the real one is executor.Executor).
 type Executor interface {
-	Execute(ctx context.Context, env intent.Envelope, g intent.Grant) (executor.Result, error)
+	Execute(ctx context.Context, env intent.Envelope, g intent.Grant, worktree string) (executor.Result, error)
 }
 
-// Sandboxer clones repo's default branch, creates work branch, and returns a
-// sandbox whose Worktree() is the checkout. Implementations can borrow the
-// scanjob clone + a git branch checkout; tests inject a stub.
-type Sandboxer func(ctx context.Context, repo, branch, baseRef string) (runtime.Sandbox, error)
+// Sandboxer clones repo's default branch and returns a sandbox whose
+// Worktree() is the checkout. The agent branches and commits inside it; the
+// executor later reads both from git state. Implementations can borrow the
+// scanjob clone; tests inject a stub.
+type Sandboxer func(ctx context.Context, repo string) (runtime.Sandbox, error)
 
-// Pipeline orchestrates one upgrade run.
+// Pipeline orchestrates one security run.
 type Pipeline struct {
 	Store   Store
 	Agent   runtime.AgentRuntime
 	Exec    Executor
 	Sandbox Sandboxer
-	// Commit stages and commits the worktree on branch (local, no token).
-	Commit func(ctx context.Context, worktree, branch string) error
 }
 
-// Run executes the upgrade orchestration and returns the GitHub ref (e.g.
+// Run executes the security orchestration and returns the GitHub ref (e.g.
 // "owner/repo#123") on success. It marks the run running/failed/succeeded.
+// A stand-down (agent blocked, no open_pr intent) is terminal: it records the
+// failure reason and returns nil — it must NOT become a River retry.
 func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	run, err := p.Store.RunByID(ctx, runID)
 	if err != nil {
@@ -63,9 +65,6 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	if err := json.Unmarshal(run.Meta, &m); err != nil {
 		return "", fmt.Errorf("meta: %w", err)
 	}
-	if m.Package == "" || m.To == "" {
-		return "", fmt.Errorf("upgrade run missing meta (pkg/to)")
-	}
 
 	fail := func(err error) (string, error) {
 		_ = p.Store.SetRunStatus(ctx, runID, ledger.RunFailed)
@@ -75,16 +74,9 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 		return "", err
 	}
 
-	topic := "upgrade-" + m.Package + "-" + m.To
-	branch := "bot/" + runID + "-" + topic
-	sb, err := p.Sandbox(ctx, g.Repo.Owner+"/"+g.Repo.Name, branch, g.Scope.BaseRef)
+	sb, err := p.Sandbox(ctx, g.Repo.Owner+"/"+g.Repo.Name)
 	if err != nil {
 		return fail(fmt.Errorf("sandbox: %w", err))
-	}
-
-	task := runtime.UpgradeTask{Package: m.Package, CurrentVersion: m.From, TargetVersion: m.To}
-	if task.TestCommand == "" {
-		task.TestCommand = upgrade.TestCommandFor(sb.Worktree())
 	}
 
 	// A sane wall-clock cap (the grant's intent.Limits carries no duration).
@@ -92,10 +84,10 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	// exceed 15m, so cap generously at 40m (drafts are cheap to kill).
 	wall := 40 * time.Minute
 	res, err := p.Agent.Run(ctx, runtime.RunInput{
-		RunID:   runID,
-		Task:    task,
+		RunID:  runID,
+		Task:   runtime.SecurityTask{BaseRef: m.BaseRef},
 		Sandbox: sb,
-		Limits:  runtime.Limits{MaxSeconds: wall},
+		Limits: runtime.Limits{MaxSeconds: wall},
 	})
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))
@@ -113,16 +105,21 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 		}
 	}
 	if openPR == nil {
+		// Stand-down: a blocked verdict means the agent could not complete the
+		// change and no PR should be opened. This is terminal for the run, not
+		// a transient failure — so record the reason and do NOT fail() (which
+		// would make River retry).
+		if res.Verdict != nil && res.Verdict.Status == runtime.VerdictBlocked {
+			if err := p.Store.SetRunFailure(ctx, runID, "agent blocked: "+res.Verdict.Summary); err != nil {
+				return "", fmt.Errorf("record failure: %w", err)
+			}
+			log.Printf("run %s: agent stood down (blocked)", runID)
+			return "", nil
+		}
 		return fail(fmt.Errorf("no open_pr intent produced"))
 	}
 
-	if p.Commit != nil {
-		if err := p.Commit(ctx, sb.Worktree(), branch); err != nil {
-			return fail(fmt.Errorf("commit: %w", err))
-		}
-	}
-
-	cr, err := p.Exec.Execute(ctx, *openPR, g)
+	cr, err := p.Exec.Execute(ctx, *openPR, g, sb.Worktree())
 	if err != nil {
 		return fail(fmt.Errorf("execute: %w", err))
 	}

@@ -16,11 +16,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/shambu2k/bothos/internal/intent"
 	"github.com/shambu2k/bothos/internal/runtime"
+	"github.com/shambu2k/bothos/internal/verifier"
 )
 
 // defaultModel is the OpenRouter model used unless the runtime is configured
@@ -34,6 +37,12 @@ type RPC struct {
 	sessionDir string        // root for per-run --session-dir (persistent)
 	approve    bool          // pass --approve (trust throwaway sandbox)
 	WaitDelay  time.Duration // backstop bound after SIGTERM (default 15s)
+
+	// Verify re-checks the agent's claimed fixes deterministically (defaults to
+	// a verifier.Verifier when nil) and MaxRounds bounds the feedback loop.
+	// Inject both in tests to script verifier trajectories.
+	Verify    func(ctx context.Context, worktree string, fixes []runtime.ClaimedFix) (verifier.Result, error)
+	MaxRounds int
 }
 
 // NewPIRPC returns an RPC configured from zero or a partially-filled model.
@@ -89,7 +98,9 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	// Own process group: the child (and its tools) won't be swept by signals
 	// sent to the worker's group, and we can target it precisely on shutdown.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = os.Environ()
+	// The pi subprocess must never inherit the executor's write token: strip
+	// every GITHUB_WRITE_TOKEN* variable (global and per-account) before fork.
+	cmd.Env = withoutSecrets(os.Environ())
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -124,7 +135,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	if err := enc.Encode(map[string]any{
 		"id":      "1",
 		"type":    "prompt",
-		"message": runtime.UpgradePrompt(in.Task) + reportingInstructions,
+		"message": runtime.SecurityPrompt(in.RunID, in.Task) + reportingInstructions,
 	}); err != nil {
 		_ = cmd.Process.Kill()
 		return runtime.RunResult{}, fmt.Errorf("write prompt: %w (%s)", err, errBuf.String())
@@ -151,6 +162,66 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		}
 	}
 
+	// External verification feedback loop. A blocked verdict stands down (the
+	// runpipe routes that to terminal) and skips verification entirely. Any
+	// other verdict — including nil — goes through the loop, which feeds
+	// verifier findings back as prompts until it passes, stalls, or exhausts
+	// MaxRounds. The agent cannot grade its own homework.
+	var vr *verifier.Result
+	if v == nil || v.Status != runtime.VerdictBlocked {
+		verify := r.Verify
+		if verify == nil {
+			verify = func(ctx context.Context, wt string, fixes []runtime.ClaimedFix) (verifier.Result, error) {
+				return (verifier.Verifier{}).Verify(ctx, wt, fixes), nil
+			}
+		}
+		maxRounds := r.MaxRounds
+		if maxRounds <= 0 {
+			maxRounds = 3
+		}
+
+		fixes := []runtime.ClaimedFix(nil)
+		if v != nil {
+			fixes = v.Fixes
+		}
+		prevSig := ""
+		var prevFailures []verifier.Failure
+		for round := 1; round <= maxRounds; round++ {
+			res, err := verify(ctx, worktree, fixes)
+			if err != nil {
+				// A verifier error is red — we never silently skip the gate.
+				res = verifier.Result{Failures: []verifier.Failure{
+					{Rule: verifier.RuleScannerError, Detail: "verify: " + err.Error()},
+				}}
+			}
+			cur := res
+			vr = &cur
+			if cur.Pass {
+				break
+			}
+			sig := verifier.Signature(cur.Failures)
+			if round == maxRounds || sig == prevSig {
+				break // stall or exhausted — ship the known failures in the PR body
+			}
+			prevSig = sig
+			msg := verifier.FormatFeedback(prevFailures, cur.Failures, round, maxRounds)
+			if err := enc.Encode(map[string]any{
+				"id":      fmt.Sprintf("fb%d", round),
+				"type":    "prompt",
+				"message": msg,
+			}); err != nil {
+				log.Printf("run %s: feedback encode: %v", in.RunID, err)
+				break
+			}
+			_ = r.awaitSettled(in.RunID, sc)
+			if nv := readVerdict(worktree); nv != nil {
+				v = nv
+				fixes = v.Fixes
+			}
+			prevFailures = cur.Failures
+		}
+	}
+
 	// The .bothos directory is harness bookkeeping; it must never reach the
 	// diff gate or the PR.
 	_ = os.RemoveAll(filepath.Join(worktree, ".bothos"))
@@ -170,13 +241,22 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		return runtime.RunResult{}, settleErr
 	}
 
-	// Diff gate: the agent must have actually changed the worktree.
-	if !worktreeChanged(worktree) {
-		return runtime.RunResult{}, fmt.Errorf("agent made no changes to the worktree")
+	// A blocked verdict is a stand-down: the agent could not complete the change
+	// and opens no PR. runpipe routes this to a terminal failure record (never
+	// a River retry). Verification was already skipped above.
+	if v != nil && v.Status == runtime.VerdictBlocked {
+		return runtime.RunResult{Verdict: v}, nil
+	}
+
+	// Diff gate: the agent must have committed on its branch (rev-list ahead of
+	// origin/HEAD). Dirty-tree (uncommitted) checks belong to the verifier, not
+	// here.
+	if !hasCommits(worktree) {
+		return runtime.RunResult{}, fmt.Errorf("agent produced no commits on its branch")
 	}
 
 	return runtime.RunResult{
-		Intents: []intent.Envelope{openPRIntent(in.RunID, worktree, in.Task, v)},
+		Intents: []intent.Envelope{openPRIntent(in.RunID, v, vr)},
 		Verdict: v,
 	}, nil
 }
@@ -189,7 +269,7 @@ const reportingInstructions = `
 When you finish, you MUST report your outcome by writing the file
 .bothos/verdict.json in the repository root with this exact shape:
 
-{"status": "done" | "done_unverified" | "blocked", "summary": "...", "verification": "..."}
+{"status": "done" | "done_unverified" | "blocked", "summary": "...", "verification": "...", "fixes": [{"package": "...", "advisory_id": "...", "to": "..."}]}
 
 - "done": the change is complete and you verified it yourself (you ran the
   build/tests/checks you judged appropriate, and they passed). In
@@ -199,6 +279,11 @@ When you finish, you MUST report your outcome by writing the file
   your change, or no usable test setup exists). In "verification", state what
   you tried and why it is inconclusive.
 - "blocked": you cannot complete the change. In "summary", explain why.
+- "fixes": (optional) one entry per dependency you upgraded, with the
+  package name, the advisory id it resolves (if known), and the target
+  version. An external verifier re-scans to confirm these; leave
+  "advisory_id" empty to claim any advisory for the package is fixed.
+  Omit "fixes" entirely when you did not change any dependency.
 
 How you validate is your decision: the full test suite, targeted tests, a
 build, or nothing — whatever fits this change. If a check fails, determine
@@ -259,22 +344,37 @@ func readVerdict(worktree string) *runtime.Verdict {
 	}
 }
 
-// worktreeChanged reports whether the worktree differs from a clean baseline,
-// including new (untracked) files such as a freshly generated lockfile.
-func worktreeChanged(worktree string) bool {
-	out, err := exec.Command("git", "-C", worktree, "status", "--porcelain").Output()
+// hasCommits reports whether the worktree's branch has commits ahead of
+// origin/HEAD. The agent must commit its work; the harness never commits for
+// it. Dirty-tree (uncommitted) checks belong to the verifier, not here.
+func hasCommits(worktree string) bool {
+	out, err := exec.Command("git", "-C", worktree, "rev-list", "--count", "origin/HEAD..HEAD").Output()
 	if err != nil {
-		return false // not a repo / git error ⇒ treat as unchanged
+		return false // not a repo / git error ⇒ treat as no commits
 	}
-	return len(bytes.TrimSpace(out)) > 0
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // openPRIntent builds the single deterministic open_pr intent the runpipe and
 // executor already expect. Targeting (branch, base, repo) is resolved later by
-// the executor from the Grant — the agent contributes content only. The
-// agent's verdict, when present, is appended to the PR body as prose.
-func openPRIntent(runID, worktree string, t runtime.UpgradeTask, v *runtime.Verdict) intent.Envelope {
-	body := fmt.Sprintf("Security dependency upgrade: %s %s -> %s.", t.Package, t.CurrentVersion, t.TargetVersion)
+// the executor from git state and the Grant — the agent contributes content
+// only. The title comes from the first line of the verdict summary (or a
+// fallback); the body carries the verdict prose plus, when the external
+// verifier left known failures, a red-but-committed note — never a silent PR.
+func openPRIntent(runID string, v *runtime.Verdict, vr *verifier.Result) intent.Envelope {
+	title := "chore(deps): security upgrades"
+	if v != nil {
+		if line := strings.TrimSpace(strings.Split(v.Summary, "\n")[0]); line != "" {
+			title = strings.Join(strings.Fields(line), " ")
+			if len(title) > 120 {
+				title = title[:120]
+			}
+		}
+	}
 
 	heading, summary, verification := "", "", ""
 	switch {
@@ -291,19 +391,39 @@ func openPRIntent(runID, worktree string, t runtime.UpgradeTask, v *runtime.Verd
 		heading = "**Agent report (BLOCKED — change incomplete):**"
 		summary, verification = v.Summary, v.Verification
 	}
-	if heading != "" {
-		body = fmt.Sprintf("%s\n\n---\n%s %s\n\n**Verification:** %s", body, heading, summary, verification)
+	body := fmt.Sprintf("%s %s\n\n**Verification:** %s", heading, summary, verification)
+
+	if vr != nil && !vr.Pass {
+		var b strings.Builder
+		b.WriteString("\n\n**Known failures (external verifier):**\n")
+		for _, f := range vr.Failures {
+			b.WriteString(fmt.Sprintf("- %s: %s\n", f.Rule, f.Detail))
+		}
+		body += b.String()
 	}
 
 	pc := intent.OpenPR{
-		Title:    fmt.Sprintf("chore(deps): upgrade %s to %s (security)", t.Package, t.TargetVersion),
-		Body:     body,
-		Draft:    true,
-		Worktree: worktree,
-		Topic:    fmt.Sprintf("upgrade-%s-%s", t.Package, t.TargetVersion),
+		Title: title,
+		Body:  body,
+		Draft: true,
 	}
 	raw, _ := json.Marshal(pc)
 	return intent.Envelope{SchemaVersion: intent.SchemaVersion, RunID: runID, Kind: intent.KindOpenPR, Payload: raw}
+}
+
+// withoutSecrets drops every env var whose key starts with the executor's
+// write-token prefix (GITHUB_WRITE_TOKEN and GITHUB_WRITE_TOKEN_<ACCOUNT>).
+// The pi subprocess must never inherit a write credential.
+func withoutSecrets(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(k, "GITHUB_WRITE_TOKEN") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 var _ runtime.AgentRuntime = (*RPC)(nil)

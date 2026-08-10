@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -23,7 +22,6 @@ import (
 	_ "github.com/shambu2k/bothos/internal/agent"
 	"github.com/shambu2k/bothos/internal/credstore"
 	"github.com/shambu2k/bothos/internal/executor"
-	"github.com/shambu2k/bothos/internal/intent"
 	"github.com/shambu2k/bothos/internal/ledger"
 	"github.com/shambu2k/bothos/internal/queue"
 	"github.com/shambu2k/bothos/internal/runpipe"
@@ -72,12 +70,6 @@ func main() {
 			return l.SetRunStatus(ctx, runID, ledger.RunSucceeded)
 		}
 
-		var g intent.Grant
-		if err := json.Unmarshal(run.Grant, &g); err != nil {
-			log.Printf("run %s: grant: %v", runID, err)
-			return failRun(ctx, l, runID, err)
-		}
-
 		agent, err := runtime.New("pi", ctx, map[string]any{
 			"pi":          *piBin,
 			"model":       *piModel,
@@ -92,9 +84,8 @@ func main() {
 		pipeline := &runpipe.Pipeline{
 			Store:   l,
 			Agent:   agent,
-			Exec:    executor.NewExecutor(credStore, l, gh, upgrade.GitDiff{Base: g.Scope.BaseRef}, time.Now),
+			Exec:    executor.NewExecutor(credStore, l, gh, upgrade.GitDiff{}, time.Now),
 			Sandbox: newSandboxer(),
-			Commit:  commitWorktree,
 		}
 		if _, err := pipeline.Run(ctx, runID); err != nil {
 			log.Printf("run %s: pipeline: %v", runID, err)
@@ -121,10 +112,13 @@ func main() {
 	q.Client().Stop(context.Background())
 }
 
-// newSandboxer clones the repo's default branch and checks out the work branch
-// in an ephemeral temp dir, returning a sandbox bound to that worktree.
-func newSandboxer() func(ctx context.Context, repo, branch, baseRef string) (runtime.Sandbox, error) {
-	return func(ctx context.Context, repo, branch, baseRef string) (runtime.Sandbox, error) {
+// newSandboxer clones the repo's default branch into an ephemeral temp dir and
+// pre-seeds the worktree's git identity so the agent can commit on its own
+// bot/<runID>-* branch without -c flags. No branch is created here — the agent
+// creates, commits on, and owns its branch; the executor reads it from git
+// state.
+func newSandboxer() func(ctx context.Context, repo string) (runtime.Sandbox, error) {
+	return func(ctx context.Context, repo string) (runtime.Sandbox, error) {
 		dir, err := os.MkdirTemp("", "bothos-sandbox-")
 		if err != nil {
 			return nil, err
@@ -134,10 +128,16 @@ func newSandboxer() func(ctx context.Context, repo, branch, baseRef string) (run
 			_ = os.RemoveAll(dir)
 			return nil, err
 		}
-		if err := git(ctx, wt, "checkout", "-b", branch); err != nil {
+		if err := git(ctx, wt, "config", "user.name", "bothos"); err != nil {
 			_ = os.RemoveAll(dir)
 			return nil, err
 		}
+		if err := git(ctx, wt, "config", "user.email", "bothos@localhost"); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, err
+		}
+		// Ensure origin/HEAD is resolvable (the base the executor targets).
+		_ = git(ctx, wt, "remote", "set-head", "origin", "--auto")
 		return &worksandbox{worktree: wt}, nil
 	}
 }
@@ -159,16 +159,6 @@ func (s *worksandbox) Exec(ctx context.Context, cmd string, args ...string) (run
 		return out, err
 	}
 	return out, nil
-}
-
-// commitWorktree stages and commits the agent's changes locally (no credential
-// needed); the executor pushes later.
-func commitWorktree(ctx context.Context, worktree, branch string) error {
-	if err := git(ctx, worktree, "add", "-A"); err != nil {
-		return err
-	}
-	c := exec.CommandContext(ctx, "git", "-C", worktree, "-c", "user.name=bothos", "-c", "user.email=bothos@localhost", "commit", "-m", "chore(deps): apply upgrade")
-	return c.Run()
 }
 
 func git(ctx context.Context, worktree string, args ...string) error {

@@ -186,24 +186,17 @@ func decodeAndSanitise(env Envelope, g Grant) (any, error) {
 		if err := dec.Decode(&p); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrMalformed, err)
 		}
-		if strings.TrimSpace(p.Title) == "" || strings.TrimSpace(p.Worktree) == "" {
-			return nil, fmt.Errorf("%w: title and worktree required", ErrMalformed)
-		}
-		if !safeRelPath(p.Worktree) {
-			return nil, fmt.Errorf("%w: worktree escapes sandbox", ErrMalformed)
+		if strings.TrimSpace(p.Title) == "" {
+			return nil, fmt.Errorf("%w: title required", ErrMalformed)
 		}
 		p.Title = sanitiseLine(p.Title, 120)
 		p.Body = sanitiseBody(p.Body, g.Limits.MaxBodyBytes, g.Scope)
-		p.Topic = slug(p.Topic)
 		return p, nil
 
 	case KindUpdatePR:
 		var p UpdatePR
 		if err := dec.Decode(&p); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrMalformed, err)
-		}
-		if p.Worktree != "" && !safeRelPath(p.Worktree) {
-			return nil, fmt.Errorf("%w: worktree escapes sandbox", ErrMalformed)
 		}
 		if p.Body != nil {
 			b := sanitiseBody(*p.Body, g.Limits.MaxBodyBytes, g.Scope)
@@ -299,27 +292,6 @@ func sanitiseLine(s string, max int) string {
 		s = s[:max]
 	}
 	return s
-}
-
-var slugRe = regexp.MustCompile(`[^a-z0-9-]+`)
-
-func slug(s string) string {
-	s = slugRe.ReplaceAllString(strings.ToLower(s), "-")
-	s = strings.Trim(s, "-")
-	if len(s) > 40 {
-		s = s[:40]
-	}
-	if s == "" {
-		s = "change"
-	}
-	return s
-}
-
-func safeRelPath(p string) bool {
-	if path.IsAbs(p) || strings.Contains(p, "..") {
-		return false
-	}
-	return path.Clean(p) == strings.TrimSuffix(p, "/")
 }
 
 // globMatch supports the leading-**/ and trailing-/** forms used above.

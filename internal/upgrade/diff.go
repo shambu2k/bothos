@@ -11,16 +11,14 @@ import (
 )
 
 // GitDiff implements the executor's DiffSource over a real git worktree: it
-// diffs the worktree against the base ref (the repo default branch) and returns
-// the file list + added/deleted line counts that the grant's ValidateDiff
-// enforces. The executor constructs this per-run with the grant's BaseRef.
-type GitDiff struct{ Base string }
+// diffs the worktree against origin/HEAD and returns the file list +
+// added/deleted line counts that the grant's ValidateDiff enforces. The base
+// comes from git state (origin/HEAD), never from a value transported through
+// the envelope — that kept the branch/base/topic seam bugs possible.
+type GitDiff struct{}
 
-func (g GitDiff) FromWorktree(ctx context.Context, runID, worktree string) (intent.Diff, error) {
-	if g.Base == "" {
-		return intent.Diff{}, fmt.Errorf("git diff: no base ref")
-	}
-	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "diff", "--numstat", g.Base)
+func (GitDiff) FromWorktree(ctx context.Context, runID, worktree string) (intent.Diff, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "diff", "--numstat", "origin/HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return intent.Diff{}, fmt.Errorf("git diff: %w", err)
@@ -43,4 +41,28 @@ func (g GitDiff) FromWorktree(ctx context.Context, runID, worktree string) (inte
 		}
 	}
 	return d, nil
+}
+
+// BaseBranch returns the repo's default branch short name (e.g. "main")
+// resolved from the clone's origin/HEAD — git state is the single source.
+func BaseBranch(ctx context.Context, worktree string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", worktree, "rev-parse", "--abbrev-ref", "origin/HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve origin/HEAD: %w", err)
+	}
+	name := strings.TrimSpace(string(out))
+	name = strings.TrimPrefix(name, "origin/")
+	if name == "" || name == "HEAD" {
+		return "", fmt.Errorf("unresolved default branch %q", name)
+	}
+	return name, nil
+}
+
+// CurrentBranch returns the checked-out branch (git rev-parse --abbrev-ref HEAD).
+func CurrentBranch(ctx context.Context, worktree string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", worktree, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

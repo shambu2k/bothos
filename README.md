@@ -25,13 +25,14 @@ this land* field from an immutable dispatch-time Grant. See
 | `internal/intent` | Content-only intent schema + validation kernel (safe by construction) |
 | `internal/executor` | Sole holder of PATs; resolves intents against GitHub (logic + go-github adapter) |
 | `internal/policy` | Dispatch-time grants as data — the immutable capability surface per run |
-| `internal/runtime` | `AgentRuntime` seam + named runtime registry + structured upgrade prompt |
+| `internal/runtime` | `AgentRuntime` seam + named runtime registry + security-remediation prompt |
 | `internal/graphcache` | Deterministic graph cache keying + retention (`sha256(tool‖cfg‖tree)`) |
 | `internal/ledger` | `runs`/`findings`/`updates` Postgres spine + actionable candidates |
 | `internal/queue` | River-backed transactional queue + periodic jobs |
 | `internal/scan` / `internal/scanjob` | Deterministic scanners (osv-scanner) → findings |
-| `internal/agent` | PI agent via documented `--mode rpc` (persistent per-run sessions) + lifecycle hardening |
-| `internal/upgrade` | Candidate→task, grant, scheduler, git diff source |
+| `internal/agent` | PI agent via documented `--mode rpc` (persistent per-run sessions) + lifecycle hardening + external-verifier feedback loop |
+| `internal/verifier` | Deterministic re-scan of the agent's claimed fixes (osv-scanner) + feedback rendering |
+| `internal/upgrade` | Grant, scheduler, git-state helpers (branch/base resolution), git diff source |
 | `internal/runpipe` | Worker orchestration: sandbox → runtime → executor |
 | `internal/credstore` | Executor-only write-PAT resolution |
 | `cmd/gateway` | Webhook receiver (sig validation, ack-fast, dispatch) |
@@ -56,15 +57,21 @@ and is committed before the next starts.
 
 ## Phase 2 upgrade pipeline
 
-Deterministic scan candidates become draft upgrade PRs: the LLM agent runs
-inside a sandboxed clone (PI via `--mode rpc`, under `tini`, with persistent
-per-run sessions), bumps the dependency + migrates code off the default branch,
-runs tests, and the executor pushes + opens a **draft** PR. The worker runs
-without a job timeout (River's 1-minute default disabled); runpipe's own
-40-minute wall-clock cap bounds each run. Secrets live in gitignored
-`deploy/.env` (see `.env.example`) and only the executor resolves a write PAT.
-Branch/PR base = repo default branch; draft-by-default + diff/path validation
-+ human review are the safety net.
+A scheduled security run hands the agent a sandboxed clone and lets it own the
+whole mechanical loop: scan (osv-scanner, with trivy available), triage, branch
+(`bot/<runID>-*`), fix, commit, and self-verify — staged as a **draft** PR. The
+Go bot owns only policy: the immutable dispatch grant, a deny-path diff gate,
+an executor-only write token, and an external verifier that re-scans the
+agent's claimed fixes with a bounded feedback loop (the agent cannot grade its
+own homework). The executor reads branch and base from git state (the agent's
+branch, the clone's `origin/HEAD`) — nothing targeting is ever transported
+through the intent envelope, which eliminated the seam-bug class where branch
+and base were derived in two different places. The worker runs without a job
+timeout (River's 1-minute default disabled); runpipe's own 40-minute wall-clock
+cap and the verifier's round limit bound each run. Secrets live in gitignored
+`deploy/.env` (see `.env.example`); only the executor resolves a write PAT, and
+it is stripped from the agent subprocess environment. Draft-by-default +
+external verification + diff/path validation + human review are the safety net.
 
 ## Develop
 

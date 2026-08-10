@@ -20,7 +20,7 @@ import (
 func main() {
 	var (
 		repo    = flag.String("repo", "", "owner/name to schedule upgrades for")
-		baseRef = flag.String("base-ref", "main", "base branch upgrades target")
+		baseRef = flag.String("base-ref", "", "base branch upgrades target (empty = resolve the repo's default)")
 		enabled = flag.Bool("enabled", false, "explicit per-repo opt-in; refused when false")
 		dsn     = flag.String("dsn", envOr("DATABASE_URL", ""), "Postgres DSN")
 	)

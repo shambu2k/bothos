@@ -17,7 +17,7 @@ import (
 // SchemaVersion is bumped on any breaking change to payload shapes.
 // The executor rejects envelopes it does not recognise rather than
 // best-effort parsing them.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 type Kind string
 
@@ -61,27 +61,20 @@ type Source struct {
 
 // OpenPR does not carry a diff. The executor reads the sandbox worktree and
 // computes the diff itself, so the agent cannot hand over a patch that differs
-// from what it actually built and tested.
+// from what it actually built and tested. It carries content only — branch,
+// base, and repo are all resolved by the executor from git state and the
+// grant, never from the agent.
 type OpenPR struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
 	Draft bool   `json:"draft"`
-
-	// Worktree is a path inside the run's sandbox. The executor resolves it
-	// against the sandbox root and rejects anything that escapes.
-	Worktree string `json:"worktree"`
-
-	// Topic is a slug appended to the generated branch name. The agent does not
-	// choose the branch name; the executor builds bot/<run-id>-<topic>.
-	Topic string `json:"topic"`
 }
 
 // UpdatePR targets the PR named in the Grant's Scope, not one of the agent's
 // choosing.
 type UpdatePR struct {
-	Body     *string `json:"body,omitempty"`
-	Draft    *bool   `json:"draft,omitempty"`
-	Worktree string  `json:"worktree,omitempty"`
+	Body  *string `json:"body,omitempty"`
+	Draft *bool   `json:"draft,omitempty"`
 }
 
 type Verdict string

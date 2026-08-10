@@ -1,0 +1,16 @@
+#!/bin/sh
+# Fake osv-scanner for deterministic verifier tests (no network).
+#   FAKE_OSV_EXIT  -- if set, exit with this code and print an error (scanner
+#                     error path when the code is not 0/1)
+#   FAKE_OSV_JSON  -- the JSON to emit (defaults to a clean scan result)
+set -u
+if [ -n "${FAKE_OSV_EXIT:-}" ]; then
+	echo "osv-scanner: boom" >&2
+	exit "$FAKE_OSV_EXIT"
+fi
+if [ -n "${FAKE_OSV_JSON:-}" ]; then
+	printf '%s\n' "$FAKE_OSV_JSON"
+	exit 1 # 1 = findings found; standard for osv-scanner
+fi
+echo '{"results":[]}'
+exit 0

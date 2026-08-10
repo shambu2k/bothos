@@ -28,7 +28,6 @@ const e2eSecret = "e2e-secret"
 func TestEndToEndWebhookToWorker(t *testing.T) {
 	ctx := context.Background()
 	dsn := testdb.DSN(t)
-	testdb.Truncate(t, dsn, "runs", "intents", "river_job")
 
 	l, err := ledger.New(ctx, dsn)
 	if err != nil {
@@ -49,6 +48,8 @@ func TestEndToEndWebhookToWorker(t *testing.T) {
 		t.Fatalf("queue: %v", err)
 	}
 	defer q.Close()
+	// Truncate AFTER migrations created the tables (ledger + River).
+	testdb.Truncate(t, dsn, "runs", "intents", "river_job")
 	if err := q.Client().Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}

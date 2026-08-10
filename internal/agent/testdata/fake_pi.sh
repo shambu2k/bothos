@@ -1,11 +1,13 @@
 #!/bin/sh
 # Mimics `pi --mode rpc` well enough for deterministic Go unit tests (no LLM,
 # no network). Reads JSONL commands from stdin, emits RPC events to STDOUT.
-# Supports multiple prompts on one stdin (settle -> verdict -> optional nudge).
+# Supports multiple prompts on one stdin (settle -> verdict -> feedback rounds).
 #
 # Config (env):
 #   FAKE_PI_PROMPT_FILE      -- append the stdin commands (prompt) here for asserts
-#   FAKE_PI_EDIT             -- '1': create edited.txt in cwd on the first prompt
+#   FAKE_PI_EDIT             -- '1': on the first prompt, create a branch and a
+#                               commit in cwd so the worktree is ahead of
+#                               origin/HEAD (the harness's commits gate)
 #   FAKE_PI_VERDICT          -- JSON string; written to .bothos/verdict.json on
 #                               prompt number $FAKE_PI_VERDICT_ON_PROMPT (default 1)
 #   FAKE_PI_VERDICT_ON_PROMPT-- prompt number on which to write the verdict
@@ -46,7 +48,17 @@ while IFS= read -r line || [ -n "$line" ]; do
 		echo '{"type":"response","command":"prompt","success":true}'
 
 		if [ "${FAKE_PI_EDIT:-}" = "1" ] && [ "$n" -eq 1 ]; then
+			# Create a branch + commit so the run passes the commits-ahead gate.
+			# FAKE_PI_BRANCH names the branch (the E2E test sets it to
+			# bot/<runID>-security-fixes); default to a safe branch when unset.
+			if [ -n "${FAKE_PI_BRANCH:-}" ]; then
+				git checkout -q -b "$FAKE_PI_BRANCH"
+			else
+				git checkout -q -b bot/fake-fix
+			fi
 			printf 'edited\n' > edited.txt
+			git add -A
+			git -c user.name=bothos -c user.email=bothos@localhost commit -qm "apply fix (fake)"
 		fi
 
 		# Verdict hook: write .bothos/verdict.json on the configured prompt.
