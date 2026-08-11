@@ -97,10 +97,12 @@ type PostReview struct {
 }
 
 type ReviewComment struct {
-	Path string `json:"path"`
-	Line int    `json:"line"`
-	Side string `json:"side"` // LEFT | RIGHT
-	Body string `json:"body"`
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	Side     string `json:"side"` // LEFT | RIGHT
+	Body     string `json:"body"`
+	Verified bool   `json:"verified"`
+	Evidence string `json:"evidence,omitempty"`
 }
 
 type PostComment struct {

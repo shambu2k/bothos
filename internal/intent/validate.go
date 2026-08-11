@@ -224,6 +224,14 @@ func decodeAndSanitise(env Envelope, g Grant) (any, error) {
 				return nil, fmt.Errorf("%w: comment line %d", ErrMalformed, p.Comments[i].Line)
 			}
 			p.Comments[i].Body = sanitiseBody(p.Comments[i].Body, 4<<10, g.Scope)
+			if p.Comments[i].Verified {
+				p.Comments[i].Evidence = sanitiseBody(p.Comments[i].Evidence, 4<<10, g.Scope)
+				if strings.TrimSpace(p.Comments[i].Evidence) == "" {
+					return nil, fmt.Errorf("%w: verified comment evidence required", ErrMalformed)
+				}
+			} else {
+				p.Comments[i].Evidence = ""
+			}
 		}
 		return p, nil
 
