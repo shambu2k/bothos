@@ -297,6 +297,98 @@ func TestPostReviewZeroLineRejected(t *testing.T) {
 	assertErr(t, err, ErrMalformed)
 }
 
+func TestReviewCommentJSONRoundTrip(t *testing.T) {
+	want := ReviewComment{
+		Path:     "internal/review/diffcheck.go",
+		Line:     42,
+		Side:     "RIGHT",
+		Body:     "dependency changed",
+		Verified: true,
+		Evidence: "git diff evidence",
+	}
+	data := mustJSON(t, want)
+	var got ReviewComment
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestPostReviewVerifiedEvidenceIsSanitisedAndPreserved(t *testing.T) {
+	g := testGrant(func(g *Grant) {
+		g.AllowedKinds = []Kind{KindPostReview}
+		g.TokenScope = TokenIssuesWrite
+		g.Scope = Scope{Kind: ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
+	})
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
+		Verdict: VerdictComment,
+		Comments: []ReviewComment{{
+			Path:     "a.go",
+			Line:     7,
+			Side:     "LEFT",
+			Body:     "body @reviewers",
+			Verified: true,
+			Evidence: "proof @ops\u0000",
+		}},
+	})}
+
+	decoded, err := Validate(env, g, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment := decoded.(PostReview).Comments[0]
+	if comment.Path != "a.go" || comment.Line != 7 || comment.Side != "LEFT" {
+		t.Fatalf("targeting fields changed: %+v", comment)
+	}
+	if comment.Body != "body `@reviewers`" {
+		t.Fatalf("body = %q", comment.Body)
+	}
+	if !comment.Verified || comment.Evidence != "proof `@ops`" {
+		t.Fatalf("verified evidence = %+v", comment)
+	}
+}
+
+func TestPostReviewVerifiedEvidenceRequired(t *testing.T) {
+	g := testGrant(func(g *Grant) {
+		g.AllowedKinds = []Kind{KindPostReview}
+		g.TokenScope = TokenIssuesWrite
+		g.Scope = Scope{Kind: ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
+	})
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
+		Verdict: VerdictComment,
+		Comments: []ReviewComment{{
+			Path: "a.go", Line: 1, Side: "RIGHT", Body: "finding", Verified: true, Evidence: " \t\n",
+		}},
+	})}
+
+	_, err := Validate(env, g, testNow)
+	assertErr(t, err, ErrMalformed)
+}
+
+func TestPostReviewOpinionEvidenceIsRemoved(t *testing.T) {
+	g := testGrant(func(g *Grant) {
+		g.AllowedKinds = []Kind{KindPostReview}
+		g.TokenScope = TokenIssuesWrite
+		g.Scope = Scope{Kind: ScopePullRequest, Number: 9, BaseRef: "main", HeadSHA: "x"}
+	})
+	env := Envelope{SchemaVersion: int(SchemaVersion), RunID: g.RunID, Kind: KindPostReview, Payload: mustJSON(t, PostReview{
+		Verdict: VerdictComment,
+		Comments: []ReviewComment{{
+			Path: "a.go", Line: 1, Side: "RIGHT", Body: "opinion", Evidence: "model-supplied proof",
+		}},
+	})}
+
+	decoded, err := Validate(env, g, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence := decoded.(PostReview).Comments[0].Evidence; evidence != "" {
+		t.Fatalf("opinion evidence = %q, want empty", evidence)
+	}
+}
+
 func TestPostCommentEmptyBodyRejected(t *testing.T) {
 	g := testGrant(func(g *Grant) {
 		g.AllowedKinds = []Kind{KindPostComment}
