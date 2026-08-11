@@ -49,6 +49,67 @@ func TestSecurityPromptMentionsExternalVerification(t *testing.T) {
 	}
 }
 
+func TestReviewRepoSlug(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "HTTPS", raw: "https://github.com/acme/widget.git", want: "acme/widget"},
+		{name: "SSH", raw: "git@github.com:acme/widget.git", want: "acme/widget"},
+		{name: "trailing slash", raw: "https://github.com/acme/widget/", want: "acme/widget"},
+		{name: "trimmed fallback", raw: "  malformed repository  ", want: "malformed repository"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := repoSlug(tt.raw); got != tt.want {
+				t.Fatalf("repoSlug(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewPromptCarriesRequiredContract(t *testing.T) {
+	task := ReviewTask{
+		PRNumber: 17,
+		BaseSHA:  "1111111111111111111111111111111111111111",
+		HeadSHA:  "2222222222222222222222222222222222222222",
+		RepoURL:  "https://github.com/acme/widget.git",
+	}
+	prompt := ReviewPrompt(task)
+
+	for _, want := range []string{
+		"acme/widget",
+		"17",
+		task.BaseSHA,
+		task.HeadSHA,
+		"read-only",
+		"post_review",
+		"[verified]",
+		"[opinion]",
+		"never approve",
+		"AGENTS.md",
+		"untrusted",
+		"edits",
+		"commits",
+		"pushes",
+		"repository-provided scripts",
+		"questions",
+		"actionable observations",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	for _, forbidden := range []string{"approve the PR", "you should approve", "LGTM"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("prompt contains approval directive %q:\n%s", forbidden, prompt)
+		}
+	}
+}
+
 // fakeRuntime is a compile-time proof that the interface is usable by a worker
 // and that a runtime never needs a token or grant to satisfy it.
 type fakeRuntime struct{}
