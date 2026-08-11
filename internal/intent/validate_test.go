@@ -121,7 +121,8 @@ func TestValidateTokenScopeInsufficientForOpenPR(t *testing.T) {
 }
 
 func TestValidateTokenScopeThresholds(t *testing.T) {
-	// post_review needs issues_write; contents_write outranks it, read_only does not.
+	// A read-only review grant can carry post_review; only the executor resolves
+	// the separate issues-write comment credential.
 	postReview := func(t *testing.T, scope TokenScope) error {
 		t.Helper()
 		g := testGrant(func(g *Grant) {
@@ -134,8 +135,8 @@ func TestValidateTokenScopeThresholds(t *testing.T) {
 		_, err := Validate(env, g, testNow)
 		return err
 	}
-	if err := postReview(t, TokenReadOnly); !errors.Is(err, ErrCapabilityMissing) {
-		t.Fatalf("read_only should not cover post_review, got %v", err)
+	if err := postReview(t, TokenReadOnly); err != nil {
+		t.Fatalf("read_only review grant should cover post_review, got %v", err)
 	}
 	if err := postReview(t, TokenIssuesWrite); err != nil {
 		t.Fatalf("issues_write should cover post_review, got %v", err)

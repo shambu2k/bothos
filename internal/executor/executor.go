@@ -140,11 +140,16 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 		return Result{Kind: env.Kind, GitHubRef: ref, Deduped: true}, nil
 	}
 
-	pat, err := e.store.Resolve(ctx, g.Repo.AccountID, g.TokenScope)
+	tokenScope := g.TokenScope
+	if env.Kind == intent.KindPostReview {
+		tokenScope = intent.TokenIssuesWrite
+	}
+
+	pat, err := e.store.Resolve(ctx, g.Repo.AccountID, tokenScope)
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve token: %w", err)
 	}
-	cred := Credential{AccountID: g.Repo.AccountID, Scope: g.TokenScope, Token: pat, Repo: g.Repo}
+	cred := Credential{AccountID: g.Repo.AccountID, Scope: tokenScope, Token: pat, Repo: g.Repo}
 
 	var ref string
 	switch v := p.(type) {

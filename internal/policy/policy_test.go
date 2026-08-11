@@ -74,12 +74,13 @@ func TestScheduledCannotReview(t *testing.T) {
 func TestPullRequestYieldReadOnlyReview(t *testing.T) {
 	g, err := Decide(Trigger{
 		Kind: TriggerPullRequest, RepoID: "r", Owner: "o", Name: "n",
-		Number: 9, BaseRef: "main", HeadSHA: "abc",
+		Number: 9, BaseRef: "main", BaseSHA: "base-abc", HeadSHA: "head-def",
 	}, baseRules(), "run-2", now)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if g.Scope.Kind != intent.ScopePullRequest || g.Scope.Number != 9 {
+	if g.Scope.Kind != intent.ScopePullRequest || g.Scope.Number != 9 ||
+		g.Scope.BaseSHA != "base-abc" || g.Scope.HeadSHA != "head-def" {
 		t.Fatalf("scope = %+v", g.Scope)
 	}
 	if g.TokenScope != intent.TokenReadOnly {

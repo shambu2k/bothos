@@ -12,12 +12,12 @@ func TestSecurityPromptCarriesRequiredMarkers(t *testing.T) {
 	for _, want := range []string{
 		"security-remediation agent",
 		"osv-scanner",
-		"bot/run-abc123-",    // runID interpolated into the branch contract
-		"bot/run-abc123",     // literal runID present
-		"NEVER push",         // no-credentials wording
+		"bot/run-abc123-",                        // runID interpolated into the branch contract
+		"bot/run-abc123",                         // literal runID present
+		"NEVER push",                             // no-credentials wording
 		"git rev-parse --abbrev-ref origin/HEAD", // base hint + git-state truth
-		"main",               // base hint interpolated
-		"trivy",              // optional second scanner
+		"main",                                   // base hint interpolated
+		"trivy",                                  // optional second scanner
 	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q:\n%s", want, p)
@@ -119,6 +119,8 @@ func (fakeRuntime) Run(ctx context.Context, in RunInput) (RunResult, error) {
 }
 
 var _ AgentRuntime = fakeRuntime{}
+var _ Task = SecurityTask{}
+var _ Task = ReviewTask{}
 
 func TestRunInputCarriesNoCredential(t *testing.T) {
 	// The seam must not smuggle a Grant or PAT into the agent runtime.
@@ -133,6 +135,10 @@ func TestRunInputCarriesNoCredential(t *testing.T) {
 	}
 	if in.RunID != "run-1" || in.GraphKey != "abc" {
 		t.Fatalf("unexpected input: %+v", in)
+	}
+	security, ok := in.Task.(SecurityTask)
+	if !ok || security.BaseRef != "main" {
+		t.Fatalf("task = %#v, want SecurityTask", in.Task)
 	}
 }
 

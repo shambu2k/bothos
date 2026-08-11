@@ -8,11 +8,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -65,9 +68,13 @@ func main() {
 			log.Printf("run %s: load: %v", runID, err)
 			return err
 		}
-		if run.Trigger != "upgrade" {
-			// Non-upgrade runs keep the Phase 0 no-op behaviour.
-			return l.SetRunStatus(ctx, runID, ledger.RunSucceeded)
+		switch run.Trigger {
+		case "upgrade", "webhook_pull_request":
+		default:
+			err := fmt.Errorf("unsupported run trigger %q", run.Trigger)
+			log.Printf("run %s: %v", runID, err)
+			_ = failRun(ctx, l, runID, err)
+			return nil
 		}
 
 		agent, err := runtime.New("pi", ctx, map[string]any{
@@ -85,19 +92,29 @@ func main() {
 			return nil
 		}
 
-		pipeline := &runpipe.Pipeline{
-			Store:   l,
-			Agent:   agent,
-			Exec:    executor.NewExecutor(credStore, l, gh, upgrade.GitDiff{}, time.Now),
-			Sandbox: newSandboxer(),
+		exec := executor.NewExecutor(credStore, l, gh, upgrade.GitDiff{}, time.Now)
+		var runErr error
+		switch run.Trigger {
+		case "upgrade":
+			_, runErr = (&runpipe.Pipeline{
+				Store:   l,
+				Agent:   agent,
+				Exec:    exec,
+				Sandbox: newSandboxer(),
+			}).Run(ctx, runID)
+		case "webhook_pull_request":
+			_, runErr = (&runpipe.ReviewPipeline{
+				Store:   l,
+				Agent:   agent,
+				Exec:    exec,
+				Sandbox: newReviewSandboxer(),
+			}).Run(ctx, runID)
 		}
-		if _, err := pipeline.Run(ctx, runID); err != nil {
-			log.Printf("run %s: pipeline: %v", runID, err)
-			_ = failRun(ctx, l, runID, err)
-			// Terminal, for the same reason as above: runpipe.fail() already
-			// recorded status+reason. A River retry would re-run the agent and
-			// burn tokens again (or fail fast on the now-expired grant, which
-			// is pure churn).
+		if runErr != nil {
+			log.Printf("run %s: pipeline: %v", runID, runErr)
+			_ = failRun(ctx, l, runID, runErr)
+			// Terminal: runpipe already recorded status+reason. A River retry
+			// would repeat an expensive model run.
 			return nil
 		}
 		return nil
@@ -148,6 +165,56 @@ func newSandboxer() func(ctx context.Context, repo string) (runtime.Sandbox, err
 		// Ensure origin/HEAD is resolvable (the base the executor targets).
 		_ = git(ctx, wt, "remote", "set-head", "origin", "--auto")
 		return &worksandbox{worktree: wt}, nil
+	}
+}
+
+func newReviewSandboxer() runpipe.ReviewSandboxer {
+	return newReviewSandboxerWithURL(func(repo string) string {
+		return "https://github.com/" + strings.TrimSuffix(repo, ".git") + ".git"
+	})
+}
+
+func newReviewSandboxerWithURL(repoURL func(string) string) runpipe.ReviewSandboxer {
+	return func(ctx context.Context, repo string, prNumber int, baseSHA, headSHA string) (runtime.Sandbox, error) {
+		dir, err := os.MkdirTemp("", "bothos-review-")
+		if err != nil {
+			return nil, err
+		}
+		fail := func(cause error) (runtime.Sandbox, error) {
+			_ = os.RemoveAll(dir)
+			return nil, cause
+		}
+		worktree := filepath.Join(dir, "repo")
+		if err := os.MkdirAll(worktree, 0o755); err != nil {
+			return fail(err)
+		}
+		if err := git(ctx, worktree, "init", "-q"); err != nil {
+			return fail(fmt.Errorf("init review worktree: %w", err))
+		}
+		if err := git(ctx, worktree, "remote", "add", "origin", repoURL(repo)); err != nil {
+			return fail(fmt.Errorf("add review origin: %w", err))
+		}
+		if err := git(ctx, worktree, "fetch", "--depth=1", "origin", baseSHA); err != nil {
+			return fail(fmt.Errorf("fetch review base: %w", err))
+		}
+		if err := git(ctx, worktree, "update-ref", "refs/bothos/base", "FETCH_HEAD"); err != nil {
+			return fail(fmt.Errorf("record review base: %w", err))
+		}
+		pullRef := fmt.Sprintf("refs/pull/%d/head", prNumber)
+		if err := git(ctx, worktree, "fetch", "--depth=1", "origin", pullRef); err != nil {
+			return fail(fmt.Errorf("fetch review head: %w", err))
+		}
+		if err := git(ctx, worktree, "checkout", "--detach", "FETCH_HEAD"); err != nil {
+			return fail(fmt.Errorf("checkout review head: %w", err))
+		}
+		head, err := exec.CommandContext(ctx, "git", "-C", worktree, "rev-parse", "HEAD").Output()
+		if err != nil {
+			return fail(fmt.Errorf("resolve review head: %w", err))
+		}
+		if got := strings.TrimSpace(string(head)); got != headSHA {
+			return fail(fmt.Errorf("review head mismatch: fetched %s, granted %s", got, headSHA))
+		}
+		return &worksandbox{worktree: worktree}, nil
 	}
 }
 

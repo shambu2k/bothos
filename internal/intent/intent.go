@@ -159,6 +159,7 @@ type Scope struct {
 	Kind    ScopeKind `json:"kind"`
 	Number  int       `json:"number,omitempty"` // issue or PR number
 	BaseRef string    `json:"base_ref"`
+	BaseSHA string    `json:"base_sha"`
 	HeadSHA string    `json:"head_sha"`
 }
 
