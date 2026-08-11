@@ -11,6 +11,8 @@
 #   FAKE_PI_VERDICT          -- JSON string; written to .bothos/verdict.json on
 #                               prompt number $FAKE_PI_VERDICT_ON_PROMPT (default 1)
 #   FAKE_PI_VERDICT_ON_PROMPT-- prompt number on which to write the verdict
+#   FAKE_PI_REVIEW           -- JSON string written to .bothos/review.json on
+#                               the first prompt
 #   FAKE_PI_NO_AGENT_END     -- '1': omit the settle events (cancel/EOF paths)
 #   FAKE_PI_AGENT_END        -- '1': emit agent_end (willRetry:false) instead of
 #                               agent_settled, exercising the old-build fallback
@@ -71,6 +73,12 @@ while IFS= read -r line || [ -n "$line" ]; do
 		if [ -n "${FAKE_PI_VERDICT:-}" ] && [ "$n" -eq "${FAKE_PI_VERDICT_ON_PROMPT:-1}" ]; then
 			mkdir -p .bothos
 			printf '%s\n' "$FAKE_PI_VERDICT" > .bothos/verdict.json
+		fi
+
+		# Review hook: write the content-only review result on the first prompt.
+		if [ -n "${FAKE_PI_REVIEW:-}" ] && [ "$n" -eq 1 ]; then
+			mkdir -p .bothos
+			printf '%s\n' "$FAKE_PI_REVIEW" > .bothos/review.json
 		fi
 
 		if [ "${FAKE_PI_NO_AGENT_END:-}" != "1" ]; then

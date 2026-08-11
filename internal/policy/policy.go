@@ -50,6 +50,7 @@ type Trigger struct {
 	Name          string
 	Number        int    // PR or issue number, when applicable
 	BaseRef       string // base ref for a PR
+	BaseSHA       string
 	HeadSHA       string
 	DefaultBranch string
 	Actor         string
@@ -93,7 +94,7 @@ func Decide(t Trigger, r Rules, runID string, now time.Time) (intent.Grant, erro
 		// Review is a read-only workload. Fork PRs execute untrusted code in a
 		// sandbox with no write token, so the grant itself never exceeds
 		// read_only — enforced structurally here.
-		base.Scope = intent.Scope{Kind: intent.ScopePullRequest, Number: t.Number, BaseRef: t.BaseRef, HeadSHA: t.HeadSHA}
+		base.Scope = intent.Scope{Kind: intent.ScopePullRequest, Number: t.Number, BaseRef: t.BaseRef, BaseSHA: t.BaseSHA, HeadSHA: t.HeadSHA}
 		base.AllowedKinds = []intent.Kind{intent.KindPostReview}
 		base.TokenScope = intent.TokenReadOnly
 

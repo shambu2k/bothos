@@ -70,10 +70,15 @@ const (
 	VerdictBlocked        = "blocked"         // agent cannot complete the change
 )
 
+// Task is the sealed set of workloads an agent runtime can execute.
+type Task interface{ isTask() }
+
 // SecurityTask is the structured input for a security-remediation run. The
 // agent does discovery itself (osv-scanner/trivy); the bot supplies no
 // candidate. BaseRef is a hint only — the clone's origin/HEAD is truth.
 type SecurityTask struct{ BaseRef string }
+
+func (SecurityTask) isTask() {}
 
 // ReviewTask is the immutable input for a read-only pull-request review.
 type ReviewTask struct {
@@ -83,11 +88,13 @@ type ReviewTask struct {
 	RepoURL  string
 }
 
+func (ReviewTask) isTask() {}
+
 // RunInput is everything a runtime gets. Note what is absent: no Grant, no
 // token, no repo, no scope.
 type RunInput struct {
 	RunID    string
-	Task     SecurityTask
+	Task     Task
 	GraphKey string // graph cache key for codebase context; "" = proceed without
 	Sandbox  Sandbox
 	Limits   Limits

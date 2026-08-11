@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -74,6 +75,17 @@ type rpcEvent struct {
 // and, if there is one, returns a deterministic open_pr intent.
 func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, error) {
 	worktree := in.Sandbox.Worktree()
+	var initialPrompt string
+	reviewMode := false
+	switch task := in.Task.(type) {
+	case runtime.SecurityTask:
+		initialPrompt = runtime.SecurityPrompt(in.RunID, task) + reportingInstructions
+	case runtime.ReviewTask:
+		initialPrompt = runtime.ReviewPrompt(task)
+		reviewMode = true
+	default:
+		return runtime.RunResult{}, fmt.Errorf("unsupported task type %T", in.Task)
+	}
 
 	// Persistent, per-run session directory.
 	dir := filepath.Join(r.sessionDir, in.RunID)
@@ -170,7 +182,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	if err := enc.Encode(map[string]any{
 		"id":      "1",
 		"type":    "prompt",
-		"message": runtime.SecurityPrompt(in.RunID, in.Task) + reportingInstructions,
+		"message": initialPrompt,
 	}); err != nil {
 		_ = cmd.Process.Kill()
 		return runtime.RunResult{}, fmt.Errorf("write prompt: %w (%s)", err, errBuf.String())
@@ -180,7 +192,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	// settle so the agent can be steered once if it omitted the verdict.
 	settleErr := r.awaitSettled(in.RunID, sc)
 	var v *runtime.Verdict
-	if settleErr == nil {
+	if settleErr == nil && !reviewMode {
 		v = readVerdict(worktree)
 		if v == nil {
 			// Exactly one nudge, then we re-read once and move on regardless.
@@ -201,7 +213,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	// verifier findings back as prompts until it passes, stalls, or exhausts
 	// MaxRounds. The agent cannot grade its own homework.
 	var vr *verifier.Result
-	if v == nil || v.Status != runtime.VerdictBlocked {
+	if !reviewMode && (v == nil || v.Status != runtime.VerdictBlocked) {
 		verify := r.Verify
 		if verify == nil {
 			verify = func(ctx context.Context, wt string, fixes []runtime.ClaimedFix) (verifier.Result, error) {
@@ -255,6 +267,12 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		}
 	}
 
+	var reviewEnv intent.Envelope
+	var reviewErr error
+	if reviewMode && settleErr == nil {
+		reviewEnv, reviewErr = readReviewIntent(worktree, in.RunID)
+	}
+
 	// The .bothos directory is harness bookkeeping; it must never reach the
 	// diff gate or the PR.
 	_ = os.RemoveAll(filepath.Join(worktree, ".bothos"))
@@ -272,6 +290,12 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	if settleErr != nil {
 		// Prompt rejection, or the process exited before settling cleanly.
 		return runtime.RunResult{}, settleErr
+	}
+	if reviewMode {
+		if reviewErr != nil {
+			return runtime.RunResult{}, reviewErr
+		}
+		return runtime.RunResult{Intents: []intent.Envelope{reviewEnv}}, nil
 	}
 
 	// A blocked verdict is a stand-down: the agent could not complete the change
@@ -446,6 +470,63 @@ func readVerdict(worktree string) *runtime.Verdict {
 	}
 }
 
+type reviewOutput struct {
+	Verdict  intent.Verdict `json:"verdict"`
+	Summary  string         `json:"summary"`
+	Comments []struct {
+		Path string `json:"path"`
+		Line int    `json:"line"`
+		Side string `json:"side"`
+		Body string `json:"body"`
+	} `json:"comments"`
+}
+
+func readReviewIntent(worktree, runID string) (intent.Envelope, error) {
+	path := filepath.Join(worktree, ".bothos", "review.json")
+	file, err := os.Open(path)
+	if err != nil {
+		return intent.Envelope{}, fmt.Errorf("review output: %w", err)
+	}
+	defer file.Close()
+
+	var output reviewOutput
+	dec := json.NewDecoder(file)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&output); err != nil {
+		return intent.Envelope{}, fmt.Errorf("review output: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return intent.Envelope{}, fmt.Errorf("review output: multiple JSON values")
+		}
+		return intent.Envelope{}, fmt.Errorf("review output: %w", err)
+	}
+	if output.Verdict != intent.VerdictComment && output.Verdict != intent.VerdictRequestChanges {
+		return intent.Envelope{}, fmt.Errorf("review output: unsupported verdict %q", output.Verdict)
+	}
+
+	review := intent.PostReview{Verdict: output.Verdict, Summary: output.Summary, Comments: make([]intent.ReviewComment, len(output.Comments))}
+	for i, comment := range output.Comments {
+		review.Comments[i] = intent.ReviewComment{
+			Path: comment.Path,
+			Line: comment.Line,
+			Side: comment.Side,
+			Body: comment.Body,
+		}
+	}
+	payload, err := json.Marshal(review)
+	if err != nil {
+		return intent.Envelope{}, fmt.Errorf("review output: %w", err)
+	}
+	return intent.Envelope{
+		SchemaVersion: intent.SchemaVersion,
+		RunID:         runID,
+		Kind:          intent.KindPostReview,
+		Payload:       payload,
+	}, nil
+}
+
 // hasCommits reports whether the worktree's branch has commits ahead of
 // origin/HEAD. The agent must commit its work; the harness never commits for
 // it. Dirty-tree (uncommitted) checks belong to the verifier, not here.
@@ -513,14 +594,14 @@ func openPRIntent(runID string, v *runtime.Verdict, vr *verifier.Result) intent.
 	return intent.Envelope{SchemaVersion: intent.SchemaVersion, RunID: runID, Kind: intent.KindOpenPR, Payload: raw}
 }
 
-// withoutSecrets drops every env var whose key starts with the executor's
-// write-token prefix (GITHUB_WRITE_TOKEN and GITHUB_WRITE_TOKEN_<ACCOUNT>).
-// The pi subprocess must never inherit a write credential.
+// withoutSecrets drops every env var whose key starts with an executor
+// write-token prefix. The pi subprocess must never inherit a write
+// credential.
 func withoutSecrets(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(k, "GITHUB_WRITE_TOKEN") {
+		if strings.HasPrefix(k, "GITHUB_WRITE_TOKEN") || strings.HasPrefix(k, "GITHUB_COMMENT_TOKEN") {
 			continue
 		}
 		out = append(out, kv)

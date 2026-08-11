@@ -442,6 +442,77 @@ func TestRPCRejectedPromptIsError(t *testing.T) {
 	}
 }
 
+func TestRPCReviewReturnsOpinionWithoutCommitOrVerifier(t *testing.T) {
+	repo := newRepo(t)
+	r, logf := newRPC(t, map[string]string{
+		"FAKE_PI_REVIEW": `{"verdict":"request_changes","summary":"check this","comments":[{"path":"package.json","line":1,"side":"RIGHT","body":"version looks risky"}]}`,
+	})
+	verifyCalls := 0
+	r.Verify = func(context.Context, string, []runtime.ClaimedFix) (verifier.Result, error) {
+		verifyCalls++
+		return verifier.Result{Pass: true}, nil
+	}
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "review1",
+		Task: runtime.ReviewTask{
+			PRNumber: 9,
+			BaseSHA:  strings.Repeat("1", 40),
+			HeadSHA:  strings.Repeat("2", 40),
+			RepoURL:  "https://github.com/acme/widget.git",
+		},
+		Sandbox: dirSandbox{dir: repo},
+		Limits:  runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("review invoked verifier %d times", verifyCalls)
+	}
+	if res.Verdict != nil || len(res.Intents) != 1 || res.Intents[0].Kind != intent.KindPostReview {
+		t.Fatalf("review result = %+v", res)
+	}
+	var review intent.PostReview
+	if err := json.Unmarshal(res.Intents[0].Payload, &review); err != nil {
+		t.Fatal(err)
+	}
+	if len(review.Comments) != 1 || review.Comments[0].Verified || review.Comments[0].Evidence != "" {
+		t.Fatalf("model comment was trusted: %+v", review.Comments)
+	}
+	if got := readAll(t, logf); !strings.Contains(got, "read-only") || strings.Contains(got, "verdict.json") {
+		t.Fatalf("wrong review prompt:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".bothos")); !os.IsNotExist(err) {
+		t.Fatalf(".bothos should be removed, stat err=%v", err)
+	}
+}
+
+func TestRPCReviewRejectsMissingInvalidAndExtendedOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		review string
+	}{
+		{name: "missing"},
+		{name: "invalid", review: `{`},
+		{name: "extra field", review: `{"verdict":"comment","summary":"x","comments":[],"target":"elsewhere"}`},
+		{name: "unsupported verdict", review: `{"verdict":"approve","summary":"x","comments":[]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newRepo(t)
+			r, _ := newRPC(t, map[string]string{"FAKE_PI_REVIEW": tt.review})
+			_, err := r.Run(context.Background(), runtime.RunInput{
+				RunID: "bad-review", Task: runtime.ReviewTask{PRNumber: 9}, Sandbox: dirSandbox{dir: repo},
+				Limits: runtime.Limits{MaxSeconds: time.Minute},
+			})
+			if err == nil {
+				t.Fatal("expected review output error")
+			}
+		})
+	}
+}
+
 // ---------- env hygiene: write token stripped ----------
 
 func TestWithoutSecretsStripsWriteTokens(t *testing.T) {
@@ -449,13 +520,15 @@ func TestWithoutSecretsStripsWriteTokens(t *testing.T) {
 		"PATH=/usr/bin",
 		"GITHUB_WRITE_TOKEN=secret-global",
 		"GITHUB_WRITE_TOKEN_ACME=secret-account",
+		"GITHUB_COMMENT_TOKEN=secret-comment",
+		"GITHUB_COMMENT_TOKEN_ACME=secret-comment-account",
 		"GITHUB_READ_TOKEN=readonly-ok",
 		"FOO=bar",
 	}
 	out := withoutSecrets(env)
 	for _, kv := range out {
 		k, _, _ := strings.Cut(kv, "=")
-		if strings.HasPrefix(k, "GITHUB_WRITE_TOKEN") {
+		if strings.HasPrefix(k, "GITHUB_WRITE_TOKEN") || strings.HasPrefix(k, "GITHUB_COMMENT_TOKEN") {
 			t.Fatalf("write token leaked into agent env: %q", kv)
 		}
 	}

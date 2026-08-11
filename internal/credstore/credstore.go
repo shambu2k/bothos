@@ -19,28 +19,46 @@ type Env struct {
 
 func NewEnv(lookup func(string) string) *Env { return &Env{lookup: lookup} }
 
-// Resolve returns the PAT for an account+scope. Write scopes prefer the
-// per-account GITHUB_WRITE_TOKEN_<ACCOUNT>, falling back to the global
-// GITHUB_WRITE_TOKEN; the read-only token is kept separate (GITHUB_READ_TOKEN)
-// for the clone/scan path. An account-level token is an optional override, not
-// a hard requirement.
+// Resolve returns the PAT for an account+scope. Each permission tier uses a
+// distinct environment-variable family; issues-write credentials never fall
+// back to the contents-write PAT.
 func (e *Env) Resolve(ctx context.Context, accountID string, scope intent.TokenScope) (string, error) {
-	if scope == intent.TokenReadOnly {
+	switch scope {
+	case intent.TokenReadOnly:
 		if v := e.lookup("GITHUB_READ_TOKEN"); v != "" {
 			return v, nil
 		}
 		return "", fmt.Errorf("no GITHUB_READ_TOKEN configured")
-	}
-	if accountID != "" {
-		if v := e.lookup("GITHUB_WRITE_TOKEN_" + accountID); v != "" {
+
+	case intent.TokenIssuesWrite:
+		if accountID != "" {
+			if v := e.lookup("GITHUB_COMMENT_TOKEN_" + accountID); v != "" {
+				return v, nil
+			}
+		}
+		if v := e.lookup("GITHUB_COMMENT_TOKEN"); v != "" {
 			return v, nil
 		}
+		if accountID != "" {
+			return "", fmt.Errorf("no comment token configured for account %q (GITHUB_COMMENT_TOKEN_%s nor global GITHUB_COMMENT_TOKEN)", accountID, accountID)
+		}
+		return "", fmt.Errorf("no GITHUB_COMMENT_TOKEN configured")
+
+	case intent.TokenContentsWrite:
+		if accountID != "" {
+			if v := e.lookup("GITHUB_WRITE_TOKEN_" + accountID); v != "" {
+				return v, nil
+			}
+		}
+		if v := e.lookup("GITHUB_WRITE_TOKEN"); v != "" {
+			return v, nil
+		}
+		if accountID != "" {
+			return "", fmt.Errorf("no write token configured for account %q (GITHUB_WRITE_TOKEN_%s nor global GITHUB_WRITE_TOKEN)", accountID, accountID)
+		}
+		return "", fmt.Errorf("no GITHUB_WRITE_TOKEN configured")
+
+	default:
+		return "", fmt.Errorf("unknown token scope %q", scope)
 	}
-	if v := e.lookup("GITHUB_WRITE_TOKEN"); v != "" {
-		return v, nil
-	}
-	if accountID != "" {
-		return "", fmt.Errorf("no write token configured for account %q (GITHUB_WRITE_TOKEN_%s nor global GITHUB_WRITE_TOKEN)", accountID, accountID)
-	}
-	return "", fmt.Errorf("no GITHUB_WRITE_TOKEN configured")
 }

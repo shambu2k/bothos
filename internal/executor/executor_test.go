@@ -403,22 +403,34 @@ func TestExecuteTokenScopeDrivesResolveCall(t *testing.T) {
 
 // ---------- Other kinds ----------
 
-func TestExecutePostReviewUsesScopeNumber(t *testing.T) {
+func TestExecutePostReviewUsesScopeNumberAndCommentCredential(t *testing.T) {
 	g := testGrant(func(g *intent.Grant) {
 		g.AllowedKinds = []intent.Kind{intent.KindPostReview}
-		g.TokenScope = intent.TokenIssuesWrite
+		g.TokenScope = intent.TokenReadOnly
 		g.Scope = intent.Scope{Kind: intent.ScopePullRequest, Number: 42, BaseRef: "main", HeadSHA: "x"}
 	})
 	env := mustEnv(t, g, intent.KindPostReview, map[string]any{
 		"verdict": "comment", "summary": "looks fine", "comments": []any{},
 	})
-	w := &fakeWriter{}
-	ex := newExecutor(&fakeStore{}, &fakeLedger{}, w, &fakeDiff{}, testNow)
+	store := &fakeStore{}
+	w := &fakeWriter{postRev: func(_ context.Context, cred Credential, spec PostReviewWrite) (string, error) {
+		if cred.Scope != intent.TokenIssuesWrite {
+			t.Fatalf("writer credential scope = %q", cred.Scope)
+		}
+		if spec.PRNumber != 42 {
+			t.Fatalf("PR number = %d", spec.PRNumber)
+		}
+		return "owner/repo#42", nil
+	}}
+	ex := newExecutor(store, &fakeLedger{}, w, &fakeDiff{}, testNow)
 	if _, err := ex.Execute(context.Background(), env, g, ""); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if w.callCount != 1 {
 		t.Fatalf("writer call count = %d, want 1", w.callCount)
+	}
+	if len(store.calls) != 1 || store.calls[0].scope != intent.TokenIssuesWrite {
+		t.Fatalf("store calls = %+v, want comment credential", store.calls)
 	}
 }
 

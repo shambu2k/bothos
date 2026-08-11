@@ -145,6 +145,9 @@ func granted(k Kind, allowed []Kind) bool {
 }
 
 func tokenCovers(k Kind, ts TokenScope) error {
+	if k == KindPostReview && ts == TokenReadOnly {
+		return nil
+	}
 	need := map[Kind]TokenScope{
 		KindOpenPR:      TokenContentsWrite,
 		KindUpdatePR:    TokenContentsWrite,
