@@ -1,7 +1,7 @@
-# bothos spine — Phase 0/1.
-# postgres: run ledger, findings, River queue, graph index.
-# gateway:  webhook receiver (holds the webhook secret, no GitHub token).
-# worker:   dequeues run jobs (Phase 0 stub marks them; no credentials).
+# bothos local runtime.
+# postgres: run ledger, findings, River queue, graph index, and review mapping.
+# gateway:  signed webhook receiver plus read-only dispatch metadata lookups.
+# worker:   sandboxed agent orchestration and executor-owned GitHub writes.
 #
 # The gateway/worker reach Postgres via the compose service name, not localhost.
 services:
@@ -29,6 +29,7 @@ services:
     environment:
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?set in deploy/.env}
       DATABASE_URL: postgres://maintbot:${POSTGRES_PASSWORD:-maintbot-dev}@postgres:5432/maintbot
+      GITHUB_READ_TOKEN: ${GITHUB_READ_TOKEN:-} # collaborator permission + PR metadata only
     ports:
       - "8090:8090"
     depends_on:
@@ -41,8 +42,9 @@ services:
     command: ["/usr/local/bin/bothos-worker"]
     environment:
       DATABASE_URL: postgres://maintbot:${POSTGRES_PASSWORD:-maintbot-dev}@postgres:5432/maintbot
-      GITHUB_READ_TOKEN: ${GITHUB_READ_TOKEN:-}   # readonly PAT for scanning private repos
-      GITHUB_WRITE_TOKEN: ${GITHUB_WRITE_TOKEN:-} # write PAT (executor only)
+      GITHUB_READ_TOKEN: ${GITHUB_READ_TOKEN:-}       # private scans; review checkout stays tokenless
+      GITHUB_COMMENT_TOKEN: ${GITHUB_COMMENT_TOKEN:-} # PR/issue comment writes only
+      GITHUB_WRITE_TOKEN: ${GITHUB_WRITE_TOKEN:-}     # contents + PR creation (executor only)
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       PI_MODEL: ${PI_MODEL:-openrouter/deepseek/deepseek-v4-flash-0731}
       PI_SESSION_DIR: /var/lib/bothos/sessions   # persistent per-run PI sessions

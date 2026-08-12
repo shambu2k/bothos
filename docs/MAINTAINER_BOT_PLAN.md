@@ -187,37 +187,68 @@ The queue client therefore sets `JobTimeout: -1` and relies on runpipe's own
 
 ### 5.3 PR review
 
-Read-only, opt-in review. Triggers, in order of preference:
+**Status: implemented; Phase 3 exit evidence still requires the live sample
+below.** Reviews are read-only and opt-in:
 
-1. Label `bothos/review` on a PR — works even with auto-review off (a positive
-   label is itself the opt-in; CodeRabbit pattern)
-2. `@bothos review` comment on a PR — manual, incremental (head vs base)
-3. Auto-review on `pull_request` opened/synchronize — per-repo opt-in only
-   (`repo_config.auto_review`); default OFF
+1. Label `bothos/review` on a PR.
+2. Comment `@bothos review` on a PR.
+3. Set `repo_config.auto_review=true` for automatic review on
+   `pull_request` opened, reopened, or synchronize events.
 
-The sandbox executes untrusted fork code, so this run holds no write-capable
-token at all; review comments come back as intents and the executor posts them
-under a comment-only PAT at post time (the grant stays read-only).
+`repo_config.auto_review` is deployment-owned and defaults to `false`.
+Unconfigured repositories and configured repositories with the flag off do
+not auto-review. Label and mention requests override that flag, but both
+require the delivery actor to have GitHub collaborator write permission.
+Permission lookup is authenticated with `GITHUB_READ_TOKEN` and fails closed
+when the token is absent or the GitHub API fails. `allowed_labels` is reserved
+for the Phase 4 issue workflow; it is not consulted for `bothos/review`.
 
-**Evidence-tagged reviews (differentiator).** Every review item is tagged
-`[verified]` or `[opinion]`:
+Configure a scratch repository explicitly:
 
-- **Tier 1 — deterministic, zero LLM:** denied-path hits in the diff,
-  secret-like patterns in added lines, dependency manifest delta, and an
-  osv-scanner delta (new vulnerable packages introduced by the PR, with
-  advisory IDs). Each emits `[verified]` with the exact command + output.
-- **Tier 2 — agent prose:** code-review judgment, tagged `[opinion]`, phrased
-  as questions, never "approve".
+```sql
+INSERT INTO repo_config (
+    repo_id, account_id, owner, name, default_branch, enabled,
+    denied_paths, allowed_labels, actor_allowlist, auto_review
+) VALUES (
+    'OWNER/REPO', 'ACCOUNT_ID', 'OWNER', 'REPO', 'main', true,
+    '{}', '{}', '{}', false
+)
+ON CONFLICT (repo_id) DO UPDATE SET
+    account_id = EXCLUDED.account_id,
+    owner = EXCLUDED.owner,
+    name = EXCLUDED.name,
+    default_branch = EXCLUDED.default_branch,
+    enabled = EXCLUDED.enabled,
+    auto_review = EXCLUDED.auto_review;
+```
 
-The `[verified]`/`[opinion]` split is the trust device: a human can tell at a
-glance what is real and what is a guess — the #1 failure mode of AI review
-bots. The review lands as **one persistent comment, updated in place** on new
-pushes (never N comments), plus the `graphify prs` merge-conflict signal when
-useful.
+Set the final value to `true` only when automatic review is intended. Manual
+label/mention review works while it remains `false`.
 
-No approve verdict — see the intent schema. Manual comment triggers require
-actor write access; resolved via GitHub collaborator permission at dispatch
-(fail closed without a token).
+The worker checks out the immutable base/head SHAs recorded in the grant.
+Fork and private-PR fetches are tokenless inside the review sandbox: no read,
+comment, or contents-write PAT enters the agent process. If Git cannot fetch
+the granted head without a token, the run fails rather than reviewing a
+different ref. Repository files and instructions, including `AGENTS.md`, are
+untrusted review context; they cannot widen the grant or direct bot behavior.
+
+Every emitted item has a visible provenance tag:
+
+- `[verified]` rules are `denied_path`, `secret`, `dependency_delta`,
+  `lockfile_only`, and `osv_delta`. Each item carries its rule, detail,
+  `path:line`, and bounded deterministic evidence. `osv_delta` evidence names
+  the advisory and `osv-scanner --format json .`; the other rules preserve the
+  relevant diff header or added line.
+- `[opinion]` covers the model summary and every model review comment. Model
+  output cannot mark itself verified; classification is added only after the
+  deterministic checks complete.
+
+The bot never submits a GitHub `APPROVE` event. A request-changes verdict is
+rendered only as an `[opinion]` recommendation. The executor uses a
+comment-only `GITHUB_COMMENT_TOKEN` to create or update one
+`<!-- bothos-pr-review -->` issue comment per `(repo, PR)`. The comment ID is
+stored in `review_comments` and reused for acknowledgements, retries, and new
+heads; recovery accepts the marker only when the authenticated bot owns it.
 
 ### 5.4 Labeled issues → PR
 
@@ -407,15 +438,15 @@ useful security bot at zero LLM cost.
 *Exit:* 10 consecutive upgrade PRs, none touching a denied path, none opened
 twice on retry, every one traceable to a run.
 
-**Phase 3 — PR review.**
-Read-only grant, fork-safe, opt-in (label `bothos/review`, `@bothos review`,
-or per-repo `auto_review`). Evidence-tagged: tier-1 deterministic checks
-(denied paths, secrets, dep delta, osv delta) emit `[verified]`; agent prose
-emits `[opinion]`. One persistent comment, updated in place.
-*Exit:* review comments on 20 PRs with a false-positive rate you'd tolerate as a
-reviewer. If you wouldn't, tune before proceeding — a noisy bot gets muted.
-(`[verified]` items spot-checked against a manual scan; opinions are the only
-noise source.)
+**Phase 3 — PR review (implemented; live exit sample pending).**
+Read-only grant, tokenless sandbox checkout, and opt-in dispatch via label
+`bothos/review`, `@bothos review`, or deployment-owned per-repo `auto_review`.
+Tier-1 deterministic rules emit `[verified]`; model prose emits `[opinion]`.
+One marker-backed comment is updated in place, and no approval event exists.
+*Exit:* review comments on 20 real PRs with five verified items manually
+reproduced, no `APPROVED` review, one comment ID per reviewed PR, no write token
+in any sandbox, and a false-positive rate you'd tolerate as a reviewer. If you
+wouldn't tolerate it, tune the prompt before proceeding.
 
 **Phase 4 — labeled issues.**
 Actor allowlist enforced in policy, `ActorHasWrite` resolved from GitHub
