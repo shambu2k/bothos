@@ -202,6 +202,58 @@ func TestPullRequestLoaderReturnsImmutableSHAs(t *testing.T) {
 	}
 }
 
+func TestGatewayMissingRepositoryConfigDeniesWithoutEnqueue(t *testing.T) {
+	ctx := context.Background()
+	dsn := testdb.DSN(t)
+	ledgerStore, err := ledger.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ledgerStore.Close()
+	if err := ledgerStore.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	q, err := queue.Open(ctx, dsn, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	testdb.Truncate(t, dsn, "repo_config", "runs", "intents", "river_job")
+
+	dispatcher := dispatch.New(ledgerStore, q, ledgerStore.RulesForRepo, nil, nil)
+	server := httptest.NewServer(webhookHandler(e2eSecret, dispatcher))
+	defer server.Close()
+	payload, _ := json.Marshal(map[string]any{
+		"action":     "opened",
+		"number":     9,
+		"repository": map[string]any{"name": "unconfigured", "owner": map[string]any{"login": "acme"}},
+		"pull_request": map[string]any{
+			"number": 9,
+			"base":   map[string]any{"ref": "main", "sha": "base-sha"},
+			"head":   map[string]any{"ref": "feature", "sha": "head-sha"},
+		},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	})
+	response, err := http.DefaultClient.Do(signedRequest(t, server.URL+"/webhook", "pull_request", payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	var denied, jobs int
+	if err := q.Pool().QueryRow(ctx, `SELECT count(*) FROM runs WHERE decision='deny'`).Scan(&denied); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Pool().QueryRow(ctx, `SELECT count(*) FROM river_job`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if denied != 1 || jobs != 0 {
+		t.Fatalf("denied=%d jobs=%d", denied, jobs)
+	}
+}
+
 func issuesPayload(actor string) []byte {
 	b, _ := json.Marshal(map[string]any{
 		"action": "labeled",

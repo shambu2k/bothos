@@ -134,6 +134,10 @@ CREATE TABLE IF NOT EXISTS repo_config (
     denied_paths     TEXT[] NOT NULL DEFAULT '{}',
     allowed_labels   TEXT[] NOT NULL DEFAULT '{}',
     actor_allowlist  TEXT[] NOT NULL DEFAULT '{}',
+    auto_review      BOOLEAN NOT NULL DEFAULT false,
     budget_daily_usd NUMERIC,
     schedules        JSONB
 );
+
+ALTER TABLE repo_config
+    ADD COLUMN IF NOT EXISTS auto_review BOOLEAN NOT NULL DEFAULT false;

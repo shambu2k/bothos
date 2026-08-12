@@ -16,6 +16,7 @@ func baseRules(ctx context.Context, owner, name string) (policy.Rules, error) {
 		Enabled:        true,
 		AllowedLabels:  []string{"kind/upgrade"},
 		ActorAllowlist: []string{"shambu2k"},
+		AutoReview:     true,
 	}, nil
 }
 
@@ -271,11 +272,13 @@ func TestAutomaticPullRequestDoesNotAuthorizeActor(t *testing.T) {
 		t.Fatal("automatic event performed actor lookup")
 		return false, nil
 	}}
-	event := pullRequestLabelEvent("anyone", "")
-	event.Action = github.String("opened")
-	trigger, handled, err := d.triggerFromEvent(context.Background(), event)
-	if err != nil || !handled || trigger.Manual {
-		t.Fatalf("trigger=%+v handled=%v err=%v", trigger, handled, err)
+	for _, action := range []string{"opened", "reopened", "synchronize"} {
+		event := pullRequestLabelEvent("anyone", "")
+		event.Action = github.String(action)
+		trigger, handled, err := d.triggerFromEvent(context.Background(), event)
+		if err != nil || !handled || trigger.Manual {
+			t.Fatalf("%s trigger=%+v handled=%v err=%v", action, trigger, handled, err)
+		}
 	}
 }
 
@@ -310,6 +313,45 @@ func issueCommentEvent(actor, body string, pullRequest bool) *github.IssueCommen
 			Owner: &github.User{Login: github.String("shambu2k")},
 			Name:  github.String("repo"),
 		},
+	}
+}
+
+func TestAutomaticReviewGateDoesNotTreatLingeringLabelAsManual(t *testing.T) {
+	ctx := context.Background()
+	d, _, q := newTestEnv(t)
+	d.rules = func(context.Context, string, string) (policy.Rules, error) {
+		return policy.Rules{Enabled: true, AutoReview: false}, nil
+	}
+	event := pullRequestLabelEvent("maintainer", "")
+	event.Action = github.String("synchronize")
+	event.PullRequest.Labels = []*github.Label{{Name: github.String("bothos/review")}}
+	if err := d.HandleEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	var decision string
+	if err := q.Pool().QueryRow(ctx, `SELECT decision FROM runs WHERE id='run-fixed'`).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision != "deny" {
+		t.Fatalf("synchronize decision = %q, want deny", decision)
+	}
+}
+
+func TestManualReviewOverridesAutomaticGate(t *testing.T) {
+	ctx := context.Background()
+	d, _, q := newTestEnv(t)
+	d.rules = func(context.Context, string, string) (policy.Rules, error) {
+		return policy.Rules{Enabled: true, AutoReview: false}, nil
+	}
+	if err := d.HandleEvent(ctx, pullRequestLabelEvent("maintainer", "bothos/review")); err != nil {
+		t.Fatal(err)
+	}
+	var decision string
+	if err := q.Pool().QueryRow(ctx, `SELECT decision FROM runs WHERE id='run-fixed'`).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision != "allow" {
+		t.Fatalf("manual decision = %q, want allow", decision)
 	}
 }
 

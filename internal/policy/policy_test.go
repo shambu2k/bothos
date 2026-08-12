@@ -17,6 +17,7 @@ func baseRules() Rules {
 		AllowedLabels:  []string{"kind/upgrade"},
 		ActorAllowlist: []string{"shambu2k"},
 		DeniedPaths:    []string{"secrets/**"},
+		AutoReview:     true,
 	}
 }
 
@@ -108,6 +109,29 @@ func TestManualPullRequestRequiresWritePermission(t *testing.T) {
 	}
 	if !grant.Manual {
 		t.Fatalf("manual flag not copied to grant: %+v", grant)
+	}
+}
+
+func TestAutomaticPullRequestRequiresAutoReview(t *testing.T) {
+	trigger := Trigger{
+		Kind: TriggerPullRequest, Owner: "o", Name: "n", Number: 9,
+		BaseSHA: "base", HeadSHA: "head",
+	}
+	rules := baseRules()
+	rules.AutoReview = false
+	if _, err := Decide(trigger, rules, "run-auto-denied", now); !errors.Is(err, ErrPolicyDenied) {
+		t.Fatalf("automatic review with auto_review=false = %v", err)
+	}
+	rules.AutoReview = true
+	if _, err := Decide(trigger, rules, "run-auto-allowed", now); err != nil {
+		t.Fatalf("automatic review with auto_review=true: %v", err)
+	}
+
+	trigger.Manual = true
+	trigger.ActorHasWrite = true
+	rules.AutoReview = false
+	if _, err := Decide(trigger, rules, "run-manual-override", now); err != nil {
+		t.Fatalf("manual review should not require auto_review: %v", err)
 	}
 }
 

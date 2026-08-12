@@ -15,7 +15,6 @@ import (
 	"github.com/google/go-github/v69/github"
 	"github.com/shambu2k/bothos/internal/dispatch"
 	"github.com/shambu2k/bothos/internal/ledger"
-	"github.com/shambu2k/bothos/internal/policy"
 	"github.com/shambu2k/bothos/internal/queue"
 )
 
@@ -53,7 +52,7 @@ func main() {
 	if readToken != "" {
 		client = client.WithAuthToken(readToken)
 	}
-	d := dispatch.New(l, q, defaultRules, newActorAuthorizer(client, readToken != ""), newPullRequestLoader(client))
+	d := dispatch.New(l, q, l.RulesForRepo, newActorAuthorizer(client, readToken != ""), newPullRequestLoader(client))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhook", webhookHandler(*webhookKey, d))
@@ -66,15 +65,6 @@ func main() {
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		log.Fatal(err)
 	}
-}
-
-// defaultRules is Phase 0's static policy; production reads repo_config.
-func defaultRules(ctx context.Context, owner, name string) (policy.Rules, error) {
-	return policy.Rules{
-		Enabled:        true,
-		AllowedLabels:  []string{"kind/upgrade"},
-		ActorAllowlist: []string{"shambu2k"},
-	}, nil
 }
 
 func newActorAuthorizer(client *github.Client, tokenConfigured bool) dispatch.ActorAuthorizer {
