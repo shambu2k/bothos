@@ -135,10 +135,10 @@ func TestAutomaticPullRequestRequiresAutoReview(t *testing.T) {
 	}
 }
 
-func TestIssueLabeledAllowsOpenPR(t *testing.T) {
+func TestIssueLabeledAllowsConfiguredWriteActor(t *testing.T) {
 	g, err := Decide(Trigger{
 		Kind: TriggerIssueLabeled, Owner: "o", Name: "n", Number: 5,
-		Actor: "shambu2k", LabelsApplied: []string{"kind/upgrade"},
+		Actor: "shambu2k", ActorHasWrite: true, LabelsApplied: []string{"kind/upgrade"},
 	}, baseRules(), "run-3", now)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -149,6 +149,32 @@ func TestIssueLabeledAllowsOpenPR(t *testing.T) {
 	if g.TokenScope != intent.TokenContentsWrite {
 		t.Fatalf("token = %v, want contents_write", g.TokenScope)
 	}
+}
+
+func TestIssueLabeledConfiguredActorWithoutWriteIsDenied(t *testing.T) {
+	_, err := Decide(Trigger{
+		Kind: TriggerIssueLabeled, Owner: "o", Name: "n", Number: 5,
+		Actor: "shambu2k", LabelsApplied: []string{"kind/upgrade"},
+	}, baseRules(), "run-3", now)
+	assertErr(t, err, ErrPolicyDenied)
+}
+
+func TestIssueLabeledWriteActorOutsideConfigIsDenied(t *testing.T) {
+	_, err := Decide(Trigger{
+		Kind: TriggerIssueLabeled, Owner: "o", Name: "n", Number: 5,
+		Actor: "collaborator", ActorHasWrite: true, LabelsApplied: []string{"kind/upgrade"},
+	}, baseRules(), "run-3", now)
+	assertErr(t, err, ErrPolicyDenied)
+}
+
+func TestIssueLabeledEmptyActorConfigIsDenied(t *testing.T) {
+	rules := baseRules()
+	rules.ActorAllowlist = nil
+	_, err := Decide(Trigger{
+		Kind: TriggerIssueLabeled, Owner: "o", Name: "n", Number: 5,
+		Actor: "shambu2k", ActorHasWrite: true, LabelsApplied: []string{"kind/upgrade"},
+	}, rules, "run-3", now)
+	assertErr(t, err, ErrPolicyDenied)
 }
 
 func TestIssueLabeledDeniedLabel(t *testing.T) {
@@ -165,20 +191,6 @@ func TestIssueLabeledUnauthorizedActor(t *testing.T) {
 		Actor: "attacker", LabelsApplied: []string{"kind/upgrade"},
 	}, baseRules(), "run-3", now)
 	assertErr(t, err, ErrPolicyDenied)
-}
-
-func TestIssueLabeledActorWithWriteBypassesAllowlist(t *testing.T) {
-	// "Actor ∈ actor_allowlist (or has write permission on the repo)"
-	g, err := Decide(Trigger{
-		Kind: TriggerIssueLabeled, Owner: "o", Name: "n", Number: 5,
-		Actor: "collaborator", ActorHasWrite: true, LabelsApplied: []string{"kind/upgrade"},
-	}, baseRules(), "run-3", now)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if !contains(g.AllowedKinds, intent.KindOpenPR) {
-		t.Fatalf("write-capable actor should be allowed: %v", g.AllowedKinds)
-	}
 }
 
 func TestDisabledRepoDeniesAll(t *testing.T) {

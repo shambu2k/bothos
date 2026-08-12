@@ -36,12 +36,15 @@ bothos-upgrade -repo OWNER/REPO -enabled
 
 ### Labeled issues
 
-An enabled repository may configure one or more allowed issue labels. When an
-allowlisted label is applied by a collaborator with GitHub `write`, `maintain`,
-or `admin` permission, Bothos records and queues an issue run. Permission lookup
-fails closed. The issue title and body are passed to PI as untrusted context;
-the repository, issue number, base branch, and write capability stay fixed by
-the immutable grant.
+An enabled repository may configure one or more allowed issue labels and one or
+more permitted GitHub actors in `repo_config.actor_allowlist`. Bothos records
+and queues an issue run only when an allowlisted label is applied by an actor
+who is **both** listed in that configuration and holds GitHub `write`,
+`maintain`, or `admin` permission. An empty actor list denies every
+labeled-issue trigger. The membership and permission lookups fail closed. The
+issue title and body are passed to PI as untrusted context; the repository,
+issue number, base branch, and write capability stay fixed by the immutable
+grant.
 
 The worker creates a local `bot/<run-id>-*` branch, asks PI for the smallest
 complete fix, and opens exactly one draft pull request only after the standard

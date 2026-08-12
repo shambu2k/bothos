@@ -26,7 +26,9 @@ Each enabled repository has a `repo_config` row. The configuration supplies:
 - `enabled`: whether Bothos may process triggers for the repository;
 - `default_branch`: the branch used for scheduled upgrade work;
 - `denied_paths`: additional paths that upgrade changes may not modify;
-- `auto_review`: whether ordinary pull-request events initiate a review.
+- `auto_review`: whether ordinary pull-request events initiate a review;
+- `allowed_labels`: labels that may trigger labeled-issue work; and
+- `actor_allowlist`: GitHub logins permitted to apply those labels.
 
 `auto_review` defaults to `false`. With the default setting, Bothos only reviews
 when an authorized collaborator applies `bothos/review` or comments exactly
@@ -43,10 +45,12 @@ parsing the event. A handled event always produces a ledger decision:
 - unrelated events are acknowledged without creating a run.
 
 Manual review labels and comments require GitHub `write`, `maintain`, or `admin`
-permission for the delivery actor. Labeled-issue triggers require the same
-permission unless the actor is explicitly allowlisted. The gateway uses
-`GITHUB_READ_TOKEN` for these lookups; a missing token or failed lookup denies
-the manual trigger.
+permission for the delivery actor. A labeled-issue trigger requires all three:
+an allowed label, an actor listed in that repository's `actor_allowlist`, and
+that actor's GitHub `write`, `maintain`, or `admin` permission. An empty
+`actor_allowlist` denies every labeled-issue trigger. The gateway uses
+`GITHUB_READ_TOKEN` for permission lookup; a missing token or failed lookup
+denies the trigger.
 
 ## Pull-request review
 

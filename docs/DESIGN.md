@@ -33,10 +33,14 @@ observations are labeled `[opinion]`.
 
 ## Labeled-issue controls
 
-A labeled-issue grant permits `open_pr` and `post_comment` only for its one
-issue scope. The webhook title and body are persisted solely as untrusted agent
-context. Before the agent starts, the worker rebuilds repository, issue number,
-and base branch from the grant; persisted metadata cannot retarget the task.
+A labeled-issue grant is created only when the webhook label matches
+`allowed_labels` and its sender is both listed in `actor_allowlist` and verified
+by GitHub to have `write`, `maintain`, or `admin` repository permission. An
+empty actor allowlist denies all labeled-issue events. A grant permits `open_pr`
+and `post_comment` only for its one issue scope. The webhook title and body are
+persisted solely as untrusted agent context. Before the agent starts, the worker
+rebuilds repository, issue number, and base branch from the grant; persisted
+metadata cannot retarget the task.
 
 Success accepts exactly one draft pull-request intent. A blocked verdict does
 not grant the agent a comment capability of its choosing: trusted pipeline code

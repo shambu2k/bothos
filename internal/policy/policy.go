@@ -116,8 +116,11 @@ func Decide(t Trigger, r Rules, runID string, now time.Time) (intent.Grant, erro
 		if !has(t.LabelsApplied, r.AllowedLabels) {
 			return intent.Grant{}, fmt.Errorf("%w: label %v not allowed", ErrPolicyDenied, t.LabelsApplied)
 		}
-		if !(containsStr(r.ActorAllowlist, t.Actor) || t.ActorHasWrite) {
-			return intent.Grant{}, fmt.Errorf("%w: actor %q not authorized", ErrPolicyDenied, t.Actor)
+		if !containsStr(r.ActorAllowlist, t.Actor) {
+			return intent.Grant{}, fmt.Errorf("%w: actor %q is not configured for labeled issues", ErrPolicyDenied, t.Actor)
+		}
+		if !t.ActorHasWrite {
+			return intent.Grant{}, fmt.Errorf("%w: labeled-issue actor %q lacks write permission", ErrPolicyDenied, t.Actor)
 		}
 		base.Scope = intent.Scope{Kind: intent.ScopeIssue, Number: t.Number, BaseRef: t.DefaultBranch}
 		base.AllowedKinds = []intent.Kind{intent.KindOpenPR, intent.KindPostComment}

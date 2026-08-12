@@ -59,7 +59,9 @@ func TestEndToEndWebhookToWorker(t *testing.T) {
 
 	d := dispatch.New(l, q, func(ctx context.Context, owner, name string) (policy.Rules, error) {
 		return policy.Rules{Enabled: true, AllowedLabels: []string{"kind/upgrade"}, ActorAllowlist: []string{"shambu2k"}}, nil
-	}, nil, nil)
+	}, func(context.Context, string, string, string) (bool, error) {
+		return true, nil
+	}, nil)
 
 	srv := httptest.NewServer(webhookHandler(e2eSecret, d))
 	defer srv.Close()
