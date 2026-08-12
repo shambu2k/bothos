@@ -442,6 +442,35 @@ func TestRPCRejectedPromptIsError(t *testing.T) {
 	}
 }
 
+func TestRPCIssueProducesDraftIntentWithoutDependencyVerifier(t *testing.T) {
+	repo := newRepo(t)
+	r, logf := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":    "1",
+		"FAKE_PI_BRANCH":  "bot/issue-run-fix-login",
+		"FAKE_PI_VERDICT": `{"status":"done","summary":"fix login validation","verification":"go test ./..."}`,
+	})
+	verifyCalls := 0
+	r.Verify = func(context.Context, string, []runtime.ClaimedFix) (verifier.Result, error) {
+		verifyCalls++
+		return verifier.Result{Pass: true}, nil
+	}
+
+	result, err := r.Run(context.Background(), runtime.RunInput{
+		RunID:   "issue-run",
+		Task:    runtime.IssueTask{IssueNumber: 42, Title: "Login accepts empty passwords", Body: "Reproduce with an empty password.", RepoURL: "https://github.com/acme/widget.git", BaseRef: "main"},
+		Sandbox: dirSandbox{dir: repo}, Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifyCalls != 0 || len(result.Intents) != 1 || result.Intents[0].Kind != intent.KindOpenPR {
+		t.Fatalf("result=%+v verifier calls=%d", result, verifyCalls)
+	}
+	if prompt := readAll(t, logf); !strings.Contains(prompt, "issue #42") || !strings.Contains(prompt, "Login accepts empty passwords") {
+		t.Fatalf("issue prompt missing task context:\n%s", prompt)
+	}
+}
+
 func TestRPCReviewReturnsOpinionWithoutCommitOrVerifier(t *testing.T) {
 	repo := newRepo(t)
 	r, logf := newRPC(t, map[string]string{

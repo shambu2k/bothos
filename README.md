@@ -34,6 +34,24 @@ opened.
 bothos-upgrade -repo OWNER/REPO -enabled
 ```
 
+### Labeled issues
+
+An enabled repository may configure one or more allowed issue labels. When an
+allowlisted label is applied by a collaborator with GitHub `write`, `maintain`,
+or `admin` permission, Bothos records and queues an issue run. Permission lookup
+fails closed. The issue title and body are passed to PI as untrusted context;
+the repository, issue number, base branch, and write capability stay fixed by
+the immutable grant.
+
+The worker creates a local `bot/<run-id>-*` branch, asks PI for the smallest
+complete fix, and opens exactly one draft pull request only after the standard
+intent and worktree checks pass. If the agent cannot safely complete the work,
+Bothos posts a trusted handoff comment on the original issue, stores the blocker
+reason, and finishes the run as `needs_input`; no pull request is opened.
+
+A `needs_input` handoff does not resume automatically. After providing the
+requested answer, apply an allowed label again to create a fresh run.
+
 ### Pull-request review
 
 Reviews are opt-in by default. They can be triggered by either applying the

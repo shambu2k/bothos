@@ -49,6 +49,35 @@ func TestSecurityPromptMentionsExternalVerification(t *testing.T) {
 	}
 }
 
+func TestIssuePromptCarriesRequiredContract(t *testing.T) {
+	task := IssueTask{
+		IssueNumber: 42,
+		Title:       "Repair login validation",
+		Body:        "The login form incorrectly accepts empty passwords.",
+		RepoURL:     "https://github.com/acme/widget.git",
+		BaseRef:     "main",
+	}
+	prompt := IssuePrompt("run-issue", task)
+
+	for _, want := range []string{
+		"acme/widget",
+		"issue #42",
+		"untrusted",
+		"AGENTS.md",
+		"bot/run-issue-",
+		"NEVER push",
+		".bothos/verdict.json",
+		"one precise question",
+		"Repair login validation",
+		"empty passwords",
+		"main",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestReviewRepoSlug(t *testing.T) {
 	tests := []struct {
 		name string
@@ -121,6 +150,7 @@ func (fakeRuntime) Run(ctx context.Context, in RunInput) (RunResult, error) {
 var _ AgentRuntime = fakeRuntime{}
 var _ Task = SecurityTask{}
 var _ Task = ReviewTask{}
+var _ Task = IssueTask{}
 
 func TestRunInputCarriesNoCredential(t *testing.T) {
 	// The seam must not smuggle a Grant or PAT into the agent runtime.

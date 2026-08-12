@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS runs (
     "grant"        JSONB NOT NULL,
     decision       TEXT NOT NULL,            -- allow | deny
     deny_reason    TEXT,
-    status         TEXT NOT NULL DEFAULT 'queued', -- queued|running|succeeded|failed|denied
+    status         TEXT NOT NULL DEFAULT 'queued', -- queued|running|succeeded|failed|denied|needs_input
     runtime        TEXT,
     model          TEXT,
     graph_key      TEXT,

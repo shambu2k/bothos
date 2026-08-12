@@ -122,11 +122,12 @@ func (p *Postgres) Record(ctx context.Context, idemKey, runID, githubRef string)
 type RunStatus string
 
 const (
-	RunQueued    RunStatus = "queued"
-	RunRunning   RunStatus = "running"
-	RunSucceeded RunStatus = "succeeded"
-	RunFailed    RunStatus = "failed"
-	RunDenied    RunStatus = "denied"
+	RunQueued     RunStatus = "queued"
+	RunRunning    RunStatus = "running"
+	RunSucceeded  RunStatus = "succeeded"
+	RunFailed     RunStatus = "failed"
+	RunDenied     RunStatus = "denied"
+	RunNeedsInput RunStatus = "needs_input"
 )
 
 type Run struct {
@@ -190,7 +191,7 @@ func (p *Postgres) SetRunStatus(ctx context.Context, id string, status RunStatus
 		UPDATE runs SET
 			status=$2,
 			started_at=CASE WHEN $2='running' AND started_at IS NULL THEN now() ELSE started_at END,
-			ended_at=CASE WHEN $2 IN ('succeeded','failed','denied') THEN now() ELSE ended_at END
+			ended_at=CASE WHEN $2 IN ('succeeded','failed','denied','needs_input') THEN now() ELSE ended_at END
 		WHERE id=$1`, id, status)
 	return err
 }
@@ -209,6 +210,15 @@ func (p *Postgres) SetRunRef(ctx context.Context, id, ref string) error {
 func (p *Postgres) SetRunFailure(ctx context.Context, id, reason string) error {
 	_, err := p.pool.Exec(ctx, `
 		UPDATE runs SET status='failed', failure_reason=$2, ended_at=now() WHERE id=$1`, id, reason)
+	return err
+}
+
+// SetRunNeedsInput records a terminal handoff awaiting a maintainer answer. It
+// is intentionally separate from failure: a later resume dispatcher can query
+// the blocker reason without treating the completed handoff as a retryable run.
+func (p *Postgres) SetRunNeedsInput(ctx context.Context, id, reason string) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE runs SET status='needs_input', failure_reason=$2, ended_at=now() WHERE id=$1`, id, reason)
 	return err
 }
 

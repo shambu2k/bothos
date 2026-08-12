@@ -43,8 +43,10 @@ parsing the event. A handled event always produces a ledger decision:
 - unrelated events are acknowledged without creating a run.
 
 Manual review labels and comments require GitHub `write`, `maintain`, or `admin`
-permission for the delivery actor. The gateway uses `GITHUB_READ_TOKEN` for
-this lookup; a missing token or failed lookup denies the manual trigger.
+permission for the delivery actor. Labeled-issue triggers require the same
+permission unless the actor is explicitly allowlisted. The gateway uses
+`GITHUB_READ_TOKEN` for these lookups; a missing token or failed lookup denies
+the manual trigger.
 
 ## Pull-request review
 
@@ -74,6 +76,20 @@ GitHub can reject an anchor when a changed line is no longer in the current
 diff. A `422 Unprocessable Entity` for an individual inline comment is treated
 as stale-anchor skipping; it does not prevent the remaining comments or summary
 from being posted.
+
+## Labeled-issue runs
+
+For an allowed `issues.labeled` event, Bothos stores the webhook's issue title
+and body as untrusted run metadata. The worker derives the issue number,
+repository, and base branch again from the immutable grant, creates a local
+`bot/<run-id>-*` branch, and accepts only one draft `open_pr` intent. The
+executor still computes and validates the actual worktree diff before pushing.
+
+A blocked agent verdict cannot choose a GitHub target or write kind. The
+pipeline itself creates one grant-scoped issue comment explaining the blocker,
+records its GitHub reference, and marks the run `needs_input`. No pull request
+is opened. `needs_input` is terminal in the current deployment; a later label
+creates a fresh run rather than resuming an old agent session.
 
 ## Dependency scanning and remediation
 
@@ -113,6 +129,7 @@ GitHub reference for every processed run. `review_comments` maps a pull request
 to its persistent summary-comment ID. `findings` and `updates` retain
 scan-derived dependency information.
 
-Run status values are `queued`, `running`, `succeeded`, `failed`, and `denied`.
-A shutdown does not resume a partial agent session automatically. To request a
-new review after a worker restart, use a new manual trigger on the pull request.
+Run status values are `queued`, `running`, `succeeded`, `failed`, `denied`, and
+`needs_input`. A shutdown does not resume a partial agent session automatically.
+To request a new review or issue attempt after a worker restart, use a new
+manual trigger on the pull request or reapply an allowed issue label.

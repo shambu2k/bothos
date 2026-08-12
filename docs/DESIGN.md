@@ -31,6 +31,18 @@ summary comment; it does not submit a GitHub approval or request-changes event.
 Deterministic findings are labeled `[verified]` and include evidence. Model
 observations are labeled `[opinion]`.
 
+## Labeled-issue controls
+
+A labeled-issue grant permits `open_pr` and `post_comment` only for its one
+issue scope. The webhook title and body are persisted solely as untrusted agent
+context. Before the agent starts, the worker rebuilds repository, issue number,
+and base branch from the grant; persisted metadata cannot retarget the task.
+
+Success accepts exactly one draft pull-request intent. A blocked verdict does
+not grant the agent a comment capability of its choosing: trusted pipeline code
+constructs one grant-scoped handoff comment, records the blocker, and marks the
+run `needs_input`. That state is terminal and creates no pull request.
+
 ## Upgrade controls
 
 An upgrade grant permits only draft-pull-request work. The agent can create and

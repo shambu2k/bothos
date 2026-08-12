@@ -69,7 +69,7 @@ func main() {
 			return err
 		}
 		switch run.Trigger {
-		case "upgrade", "webhook_pull_request":
+		case "upgrade", "webhook_pull_request", "webhook_issue_labeled":
 		default:
 			err := fmt.Errorf("unsupported run trigger %q", run.Trigger)
 			log.Printf("run %s: %v", runID, err)
@@ -109,6 +109,13 @@ func main() {
 				Acknowledge: exec.AcknowledgeReview,
 				Exec:        exec,
 				Sandbox:     newReviewSandboxer(),
+			}).Run(ctx, runID)
+		case "webhook_issue_labeled":
+			_, runErr = (&runpipe.IssuePipeline{
+				Store:   l,
+				Agent:   agent,
+				Exec:    exec,
+				Sandbox: newSandboxer(),
 			}).Run(ctx, runID)
 		}
 		if runErr != nil {

@@ -27,6 +27,7 @@ type Store interface {
 	RunByID(ctx context.Context, id string) (ledger.Run, error)
 	SetRunStatus(ctx context.Context, id string, s ledger.RunStatus) error
 	SetRunFailure(ctx context.Context, id, reason string) error
+	SetRunNeedsInput(ctx context.Context, id, reason string) error
 	SetRunRef(ctx context.Context, id, ref string) error
 }
 

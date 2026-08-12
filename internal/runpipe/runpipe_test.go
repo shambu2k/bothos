@@ -31,6 +31,11 @@ func (s *fakeStore) SetRunFailure(ctx context.Context, id, reason string) error 
 	s.failedReason = reason
 	return nil
 }
+func (s *fakeStore) SetRunNeedsInput(ctx context.Context, id, reason string) error {
+	s.last = ledger.RunNeedsInput
+	s.failedReason = reason
+	return nil
+}
 func (s *fakeStore) SetRunRef(ctx context.Context, id, ref string) error {
 	s.ref = ref
 	return nil
@@ -55,9 +60,13 @@ func (a fakeAgent) Run(ctx context.Context, in runtime.RunInput) (runtime.RunRes
 type fakeExec struct {
 	result       executor.Result
 	lastWorktree string
+	env          intent.Envelope
+	calls        int
 }
 
 func (e *fakeExec) Execute(ctx context.Context, env intent.Envelope, g intent.Grant, worktree string) (executor.Result, error) {
+	e.calls++
+	e.env = env
 	e.lastWorktree = worktree
 	return e.result, nil
 }

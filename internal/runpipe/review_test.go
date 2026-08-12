@@ -38,6 +38,10 @@ func (s *reviewStore) SetRunFailure(_ context.Context, _ string, reason string) 
 	s.failure = reason
 	return nil
 }
+func (s *reviewStore) SetRunNeedsInput(_ context.Context, _ string, reason string) error {
+	s.failure = reason
+	return nil
+}
 func (s *reviewStore) SetRunRef(_ context.Context, _ string, ref string) error {
 	s.ref = ref
 	return nil

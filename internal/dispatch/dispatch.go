@@ -19,6 +19,7 @@ import (
 	"github.com/shambu2k/bothos/internal/ledger"
 	"github.com/shambu2k/bothos/internal/policy"
 	"github.com/shambu2k/bothos/internal/queue"
+	"github.com/shambu2k/bothos/internal/runtime"
 )
 
 // RulesLoader resolves per-repo policy rules. Phase 0 falls back to defaults;
@@ -68,6 +69,10 @@ func (d *Dispatcher) HandleEvent(ctx context.Context, event any) error {
 	}
 
 	runID := d.newRun()
+	metaJSON, err := issueTaskMeta(trig)
+	if err != nil {
+		return fmt.Errorf("encode run metadata: %w", err)
+	}
 	g, decideErr := policy.Decide(trig, rules, runID, d.now())
 
 	if decideErr != nil {
@@ -84,6 +89,7 @@ func (d *Dispatcher) HandleEvent(ctx context.Context, event any) error {
 			Decision:    "deny",
 			DenyReason:  decideErr.Error(),
 			Status:      ledger.RunDenied,
+			Meta:        metaJSON,
 		})
 	}
 
@@ -97,6 +103,7 @@ func (d *Dispatcher) HandleEvent(ctx context.Context, event any) error {
 		Grant:       grantJSON,
 		Decision:    "allow",
 		Status:      ledger.RunQueued,
+		Meta:        metaJSON,
 	}
 
 	// The run row and its queue job commit atomically, so a redelivered or
@@ -233,6 +240,8 @@ func (d *Dispatcher) triggerFromEvent(ctx context.Context, event any) (policy.Tr
 			Actor:         actor,
 			ActorHasWrite: d.actorCanWrite(ctx, owner, name, actor),
 			LabelsApplied: []string{e.Label.GetName()},
+			IssueTitle:    e.Issue.GetTitle(),
+			IssueBody:     e.Issue.GetBody(),
 		}, true, nil
 
 	default:
@@ -250,6 +259,19 @@ func (d *Dispatcher) actorCanWrite(ctx context.Context, owner, name, actor strin
 		return false
 	}
 	return allowed
+}
+
+func issueTaskMeta(trig policy.Trigger) ([]byte, error) {
+	if trig.Kind != policy.TriggerIssueLabeled {
+		return nil, nil
+	}
+	return json.Marshal(runtime.IssueTask{
+		IssueNumber: trig.Number,
+		Title:       trig.IssueTitle,
+		Body:        trig.IssueBody,
+		RepoURL:     "https://github.com/" + trig.Owner + "/" + trig.Name + ".git",
+		BaseRef:     trig.DefaultBranch,
+	})
 }
 
 func eventSender(u *github.User) string {

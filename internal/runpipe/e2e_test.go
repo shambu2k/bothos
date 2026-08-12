@@ -39,7 +39,8 @@ func (s *stubStore) SetRunStatus(ctx context.Context, id string, st ledger.RunSt
 	s.status = st
 	return nil
 }
-func (s *stubStore) SetRunFailure(ctx context.Context, id, reason string) error { return nil }
+func (s *stubStore) SetRunFailure(ctx context.Context, id, reason string) error    { return nil }
+func (s *stubStore) SetRunNeedsInput(ctx context.Context, id, reason string) error { return nil }
 func (s *stubStore) SetRunRef(ctx context.Context, id, ref string) error {
 	s.ref = ref
 	return nil

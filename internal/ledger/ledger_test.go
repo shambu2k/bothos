@@ -107,6 +107,24 @@ func TestInsertRunAndStatusTransition(t *testing.T) {
 	}
 }
 
+func TestSetRunNeedsInputIsTerminal(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-needs-input")
+
+	if err := st.SetRunStatus(ctx, "run-needs-input", RunNeedsInput); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	var status string
+	var ended bool
+	if err := st.pool.QueryRow(ctx, `SELECT status, ended_at IS NOT NULL FROM runs WHERE id=$1`, "run-needs-input").Scan(&status, &ended); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(RunNeedsInput) || !ended {
+		t.Fatalf("status=%q ended=%v, want needs_input + ended_at", status, ended)
+	}
+}
+
 func TestSetRunFailureRecordsReason(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()

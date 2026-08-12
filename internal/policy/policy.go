@@ -57,6 +57,11 @@ type Trigger struct {
 	ActorHasWrite bool
 	Manual        bool
 	LabelsApplied []string
+
+	// IssueTitle and IssueBody are the webhook snapshot supplied to an issue
+	// task as untrusted context. They carry no authority or targeting.
+	IssueTitle string
+	IssueBody  string
 }
 
 // Rules is the per-repo configuration (repo_config in the data model). The

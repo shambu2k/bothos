@@ -77,9 +77,13 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	worktree := in.Sandbox.Worktree()
 	var initialPrompt string
 	reviewMode := false
+	verifyMode := false
 	switch task := in.Task.(type) {
 	case runtime.SecurityTask:
 		initialPrompt = runtime.SecurityPrompt(in.RunID, task) + reportingInstructions
+		verifyMode = true
+	case runtime.IssueTask:
+		initialPrompt = runtime.IssuePrompt(in.RunID, task) + reportingInstructions
 	case runtime.ReviewTask:
 		initialPrompt = runtime.ReviewPrompt(task) + reviewReportingInstructions
 		reviewMode = true
@@ -213,7 +217,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	// verifier findings back as prompts until it passes, stalls, or exhausts
 	// MaxRounds. The agent cannot grade its own homework.
 	var vr *verifier.Result
-	if !reviewMode && (v == nil || v.Status != runtime.VerdictBlocked) {
+	if verifyMode && (v == nil || v.Status != runtime.VerdictBlocked) {
 		verify := r.Verify
 		if verify == nil {
 			verify = func(ctx context.Context, wt string, fixes []runtime.ClaimedFix) (verifier.Result, error) {

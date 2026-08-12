@@ -2,12 +2,14 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/google/go-github/v69/github"
 	"github.com/shambu2k/bothos/internal/ledger"
 	"github.com/shambu2k/bothos/internal/policy"
 	"github.com/shambu2k/bothos/internal/queue"
+	"github.com/shambu2k/bothos/internal/runtime"
 	"github.com/shambu2k/bothos/internal/testdb"
 )
 
@@ -83,6 +85,30 @@ func TestLabeledIssueChecksActorWritePermission(t *testing.T) {
 	}
 	if authorizeCalls != 1 || !trigger.ActorHasWrite {
 		t.Fatalf("trigger=%+v authorization calls=%d", trigger, authorizeCalls)
+	}
+}
+
+func TestAllowLabeledIssueRecordsIssueTaskMetadata(t *testing.T) {
+	ctx := context.Background()
+	d, _, q := newTestEnv(t)
+	event := labeledIssue("shambu2k", "kind/upgrade", 5)
+	event.Issue.Title = github.String("Repair login validation")
+	event.Issue.Body = github.String("The login form incorrectly accepts empty passwords.")
+
+	if err := d.HandleEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+
+	var raw []byte
+	if err := q.Pool().QueryRow(ctx, `SELECT meta FROM runs WHERE id='run-fixed'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var task runtime.IssueTask
+	if err := json.Unmarshal(raw, &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.IssueNumber != 5 || task.Title != event.Issue.GetTitle() || task.Body != event.Issue.GetBody() || task.BaseRef != "" {
+		t.Fatalf("issue task = %+v", task)
 	}
 }
 
