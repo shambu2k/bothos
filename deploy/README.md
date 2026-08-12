@@ -1,5 +1,5 @@
-# bothos spine migration wrapper
+# Bothos local deployment
 
-This directory holds the Docker Compose infrastructure for the bot's runtime.
-`docker compose up -d` brings up Postgres; the gateway/worker/executor
-containers get added per the plan's later phases.
+Copy `.env.example` to `.env`, set the required credentials, then run
+`docker compose up -d`. The stack starts Postgres, the signed-webhook gateway,
+and the worker; credentials are split by service as documented in the example.
