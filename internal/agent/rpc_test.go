@@ -480,11 +480,55 @@ func TestRPCReviewReturnsOpinionWithoutCommitOrVerifier(t *testing.T) {
 	if len(review.Comments) != 1 || review.Comments[0].Verified || review.Comments[0].Evidence != "" {
 		t.Fatalf("model comment was trusted: %+v", review.Comments)
 	}
-	if got := readAll(t, logf); !strings.Contains(got, "read-only") || strings.Contains(got, "verdict.json") {
-		t.Fatalf("wrong review prompt:\n%s", got)
+	if got := readAll(t, logf); !strings.Contains(got, "read-only") || !strings.Contains(got, ".bothos/review.json") {
+		t.Fatalf("review prompt must be read-only and carry the review.json report contract:\n%s", got)
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".bothos")); !os.IsNotExist(err) {
 		t.Fatalf(".bothos should be removed, stat err=%v", err)
+	}
+}
+
+func TestRPCReviewThreadsVerifiedAndEvidence(t *testing.T) {
+	repo := newRepo(t)
+	r, _ := newRPC(t, map[string]string{
+		"FAKE_PI_REVIEW": `{"verdict":"comment","summary":"mostly fine","comments":[
+			{"path":"PHASE3_LIVE_PROBE.md","line":5,"side":"RIGHT","body":"[verified] secret-like pattern","verified":true,"evidence":"grep -nE 'sk-live-probe' PHASE3_LIVE_PROBE.md"},
+			{"path":"src/app.go","line":3,"side":"RIGHT","body":"[opinion] could we make this clearer?","verified":false}
+		]}`,
+	})
+	verifyCalls := 0
+	r.Verify = func(context.Context, string, []runtime.ClaimedFix) (verifier.Result, error) {
+		verifyCalls++
+		return verifier.Result{Pass: true}, nil
+	}
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "review3",
+		Task: runtime.ReviewTask{
+			PRNumber: 11, BaseSHA: strings.Repeat("1", 40), HeadSHA: strings.Repeat("2", 40),
+			RepoURL: "https://github.com/acme/widget.git",
+		},
+		Sandbox: dirSandbox{dir: repo},
+		Limits:  runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review intent.PostReview
+	if err := json.Unmarshal(res.Intents[0].Payload, &review); err != nil {
+		t.Fatal(err)
+	}
+	if len(review.Comments) != 2 {
+		t.Fatalf("want 2 comments, got %d", len(review.Comments))
+	}
+	if !review.Comments[0].Verified || review.Comments[0].Evidence == "" {
+		t.Fatalf("verified comment lost evidence: %+v", review.Comments[0])
+	}
+	if review.Comments[1].Verified || review.Comments[1].Evidence != "" {
+		t.Fatalf("opinion comment wrongly trusted: %+v", review.Comments[1])
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("review invoked verifier %d times", verifyCalls)
 	}
 }
 

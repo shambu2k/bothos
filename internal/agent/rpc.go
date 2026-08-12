@@ -81,7 +81,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	case runtime.SecurityTask:
 		initialPrompt = runtime.SecurityPrompt(in.RunID, task) + reportingInstructions
 	case runtime.ReviewTask:
-		initialPrompt = runtime.ReviewPrompt(task)
+		initialPrompt = runtime.ReviewPrompt(task) + reviewReportingInstructions
 		reviewMode = true
 	default:
 		return runtime.RunResult{}, fmt.Errorf("unsupported task type %T", in.Task)
@@ -349,6 +349,45 @@ pre-existing or environmental failures. The .bothos directory is harness
 bookkeeping; it is deleted when your run ends and must not be part of the
 change itself.`
 
+// reviewReportingInstructions is appended to the review prompt so the agent
+// knows how to report its review. The review note is content for a PR comment
+// — never used for targeting (the PR number/SHAs come from the grant), and
+// never a GitHub approve verdict. Verified/evidence are machine-checked tags
+// the harness carries; the agent may only claim [verified] for items it can
+// point to exact command output for, everything else stays [opinion].
+const reviewReportingInstructions = `
+
+IMPORTANT — you MUST report your review by writing the file
+.bothos/review.json in the repository root with this exact shape:
+
+{
+  "verdict": "comment" | "request_changes",
+  "summary": "one or two sentence summary of the review",
+  "comments": [
+    {
+      "path": "path/to/file",
+      "line": 12,
+      "side": "RIGHT",
+      "body": "the comment text",
+      "verified": true,
+      "evidence": "exact command you ran and its relevant output"
+    }
+  ]
+}
+
+Rules:
+- Use "request_changes" only when you found a blocking defect; otherwise use
+  "comment". NEVER use any approve verdict — this bot never approves.
+- Every comment must carry an explicit tag in its body, either "[verified]"
+  (you ran a deterministic command whose output you quote in the evidence
+  field) or "[opinion]" (model judgment, phrased as a question, evidence
+  empty). A comment with no tag is invalid; prefer omitting low-confidence
+  items.
+- This is read-only: never create branches, commit, or push, and never write
+  any file other than .bothos/review.json (harness bookkeeping, deleted after
+  your run).
+- Valid JSON only, nothing else in the file. Omit the evidence field for opinions.`
+
 // awaitConfigAcks reads RPC stdout until the response (ack) for each config
 // command has arrived and succeeded, or the process exits. Because PI
 // dispatches stdin lines asynchronously, the agent prompt must not be sent
@@ -474,10 +513,12 @@ type reviewOutput struct {
 	Verdict  intent.Verdict `json:"verdict"`
 	Summary  string         `json:"summary"`
 	Comments []struct {
-		Path string `json:"path"`
-		Line int    `json:"line"`
-		Side string `json:"side"`
-		Body string `json:"body"`
+		Path     string `json:"path"`
+		Line     int    `json:"line"`
+		Side     string `json:"side"`
+		Body     string `json:"body"`
+		Verified bool   `json:"verified"`
+		Evidence string `json:"evidence,omitempty"`
 	} `json:"comments"`
 }
 
@@ -509,10 +550,12 @@ func readReviewIntent(worktree, runID string) (intent.Envelope, error) {
 	review := intent.PostReview{Verdict: output.Verdict, Summary: output.Summary, Comments: make([]intent.ReviewComment, len(output.Comments))}
 	for i, comment := range output.Comments {
 		review.Comments[i] = intent.ReviewComment{
-			Path: comment.Path,
-			Line: comment.Line,
-			Side: comment.Side,
-			Body: comment.Body,
+			Path:     comment.Path,
+			Line:     comment.Line,
+			Side:     comment.Side,
+			Body:     comment.Body,
+			Verified: comment.Verified,
+			Evidence: comment.Evidence,
 		}
 	}
 	payload, err := json.Marshal(review)
