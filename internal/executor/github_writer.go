@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strings"
 
 	"github.com/google/go-github/v69/github"
 	"github.com/shambu2k/bothos/internal/intent"
@@ -16,6 +17,11 @@ import (
 type githubWriter struct {
 	newClient func(token string) *github.Client
 }
+
+const (
+	reviewCommentMarker = "<!-- bothos-pr-review -->"
+	reviewQueuedBody    = reviewCommentMarker + "\n👀 Review queued."
+)
 
 // NewGitHubWriter returns a GitHubWriter backed by go-github. newClient is
 // injectable for tests (override BaseURL to an httptest server); when nil it
@@ -111,6 +117,41 @@ func (w *githubWriter) PostReview(ctx context.Context, cred Credential, spec Pos
 		return "", err
 	}
 	return w.ref(cred, spec.PRNumber), nil
+}
+
+func (w *githubWriter) AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (string, error) {
+	client := w.newClient(cred.Token)
+	user, _, err := client.Users.Get(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	login := user.GetLogin()
+	if login == "" {
+		return "", fmt.Errorf("authenticated GitHub login is empty")
+	}
+
+	options := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
+	for {
+		comments, response, err := client.Issues.ListComments(ctx, cred.Repo.Owner, cred.Repo.Name, prNumber, options)
+		if err != nil {
+			return "", err
+		}
+		for _, comment := range comments {
+			if strings.EqualFold(comment.GetUser().GetLogin(), login) && strings.Contains(comment.GetBody(), reviewCommentMarker) {
+				return w.ref(cred, prNumber), nil
+			}
+		}
+		if response.NextPage == 0 {
+			break
+		}
+		options.Page = response.NextPage
+	}
+	if _, _, err := client.Issues.CreateComment(ctx, cred.Repo.Owner, cred.Repo.Name, prNumber, &github.IssueComment{
+		Body: github.String(reviewQueuedBody),
+	}); err != nil {
+		return "", err
+	}
+	return w.ref(cred, prNumber), nil
 }
 
 func (w *githubWriter) PostComment(ctx context.Context, cred Credential, spec PostCommentWrite) (string, error) {

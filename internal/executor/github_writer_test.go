@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,6 +34,10 @@ func newFakeGitHub(t *testing.T) (*github.Client, *[]recordedRequest) {
 		rec = append(rec, recordedRequest{method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"), body: m})
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
+			fmt.Fprint(w, `{"login":"bothos-bot"}`)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
 			fmt.Fprint(w, `{"number":123,"html_url":"https://github.com/shambu2k/repo/pull/123"}`)
 		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/pulls/"):
@@ -176,6 +181,65 @@ func TestWriterPostComment(t *testing.T) {
 	}
 	if r.body["body"] != "done" {
 		t.Errorf("body = %v", r.body["body"])
+	}
+}
+
+func TestWriterAcknowledgeReviewCreatesExactMarker(t *testing.T) {
+	writer, requests := newAdapter(t, testToken)
+	cred := Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}}
+	if _, err := writer.AcknowledgeReview(context.Background(), cred, 42); err != nil {
+		t.Fatal(err)
+	}
+	if len(*requests) != 3 {
+		t.Fatalf("requests = %+v", *requests)
+	}
+	create := (*requests)[2]
+	if create.method != http.MethodPost || create.path != "/repos/shambu2k/repo/issues/42/comments" ||
+		create.body["body"] != "<!-- bothos-pr-review -->\n👀 Review queued." {
+		t.Fatalf("create = %+v", create)
+	}
+}
+
+func TestWriterAcknowledgeReviewOnlyTrustsOwnedMarker(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		author      string
+		wantCreates int
+	}{
+		{name: "owned", author: "bothos-bot", wantCreates: 0},
+		{name: "attacker", author: "attacker", wantCreates: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			creates := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/user":
+					fmt.Fprint(w, `{"login":"bothos-bot"}`)
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+					fmt.Fprintf(w, `[{"id":9,"body":"<!-- bothos-pr-review -->","user":{"login":%q}}]`, tt.author)
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+					creates++
+					fmt.Fprint(w, `{"id":10}`)
+				default:
+					http.Error(w, "unexpected", http.StatusInternalServerError)
+				}
+			}))
+			defer server.Close()
+			base, _ := url.Parse(server.URL + "/")
+			writer := NewGitHubWriter(func(string) *github.Client {
+				client := github.NewClient(server.Client())
+				client.BaseURL = base
+				return client
+			})
+			cred := Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}}
+			if _, err := writer.AcknowledgeReview(context.Background(), cred, 42); err != nil {
+				t.Fatal(err)
+			}
+			if creates != tt.wantCreates {
+				t.Fatalf("creates = %d, want %d", creates, tt.wantCreates)
+			}
+		})
 	}
 }
 

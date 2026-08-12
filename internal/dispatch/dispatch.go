@@ -10,6 +10,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/go-github/v69/github"
@@ -22,21 +25,28 @@ import (
 // production reads repo_config.
 type RulesLoader func(ctx context.Context, owner, name string) (policy.Rules, error)
 
+type ActorAuthorizer func(ctx context.Context, owner, name, actor string) (bool, error)
+type PullRequestLoader func(ctx context.Context, owner, name string, number int) (baseSHA, headSHA string, err error)
+
 type Dispatcher struct {
-	ledger *ledger.Postgres
-	queue  *queue.Queue
-	rules  RulesLoader
-	now    func() time.Time
-	newRun func() string
+	ledger    *ledger.Postgres
+	queue     *queue.Queue
+	rules     RulesLoader
+	authorize ActorAuthorizer
+	loadPR    PullRequestLoader
+	now       func() time.Time
+	newRun    func() string
 }
 
-func New(l *ledger.Postgres, q *queue.Queue, rules RulesLoader) *Dispatcher {
+func New(l *ledger.Postgres, q *queue.Queue, rules RulesLoader, authorize ActorAuthorizer, loadPR PullRequestLoader) *Dispatcher {
 	return &Dispatcher{
-		ledger: l,
-		queue:  q,
-		rules:  rules,
-		now:    time.Now,
-		newRun: newRunID,
+		ledger:    l,
+		queue:     q,
+		rules:     rules,
+		authorize: authorize,
+		loadPR:    loadPR,
+		now:       time.Now,
+		newRun:    newRunID,
 	}
 }
 
@@ -44,7 +54,7 @@ func New(l *ledger.Postgres, q *queue.Queue, rules RulesLoader) *Dispatcher {
 // enqueues the run atomically. It returns nil for events this bot doesn't
 // dispatch on (ping, unlabeled, ...) after doing nothing.
 func (d *Dispatcher) HandleEvent(ctx context.Context, event any) error {
-	trig, handled, err := d.triggerFromEvent(event)
+	trig, handled, err := d.triggerFromEvent(ctx, event)
 	if err != nil {
 		return err
 	}
@@ -109,37 +119,101 @@ func (d *Dispatcher) HandleEvent(ctx context.Context, event any) error {
 	return nil
 }
 
+var reviewMention = regexp.MustCompile(`(?i)^\s*@bothos\s+review\s*$`)
+
 // triggerFromEvent maps a go-github event to a policy.Trigger, reporting
 // handled=false for events the bot doesn't act on.
-func (d *Dispatcher) triggerFromEvent(event any) (policy.Trigger, bool, error) {
+func (d *Dispatcher) triggerFromEvent(ctx context.Context, event any) (policy.Trigger, bool, error) {
 	switch e := event.(type) {
 	case *github.PullRequestEvent:
 		if e.Repo == nil || e.Repo.Owner == nil || e.Repo.Name == nil || e.PullRequest == nil {
 			return policy.Trigger{}, false, nil
 		}
-		if e.GetAction() != "opened" && e.GetAction() != "synchronize" && e.GetAction() != "reopened" {
+		manual := false
+		switch e.GetAction() {
+		case "opened", "synchronize", "reopened":
+		case "labeled":
+			if e.Label == nil || e.Label.GetName() != "bothos/review" {
+				return policy.Trigger{}, false, nil
+			}
+			manual = true
+		default:
 			return policy.Trigger{}, false, nil
 		}
-		var base, head string
+
+		owner, name := e.Repo.Owner.GetLogin(), e.Repo.GetName()
+		actor := eventSender(e.Sender)
+		canWrite := false
+		if manual {
+			canWrite = d.actorCanWrite(ctx, owner, name, actor)
+		}
+		var baseRef, baseSHA, headSHA string
 		if e.PullRequest.Base != nil {
-			base = e.PullRequest.Base.GetRef()
+			baseRef = e.PullRequest.Base.GetRef()
+			baseSHA = e.PullRequest.Base.GetSHA()
 		}
 		if e.PullRequest.Head != nil {
-			head = e.PullRequest.Head.GetSHA()
+			headSHA = e.PullRequest.Head.GetSHA()
+		}
+		number := e.GetNumber()
+		if number == 0 {
+			number = int(e.PullRequest.GetNumber())
 		}
 		return policy.Trigger{
-			Kind:  policy.TriggerPullRequest,
-			Owner: e.Repo.Owner.GetLogin(),
-			Name:  e.Repo.GetName(),
-			Number: func() int {
-				if e.Number != nil {
-					return e.GetNumber()
-				}
-				return int(e.PullRequest.GetNumber())
-			}(),
-			BaseRef: base,
-			HeadSHA: head,
+			Kind:          policy.TriggerPullRequest,
+			Owner:         owner,
+			Name:          name,
+			Number:        number,
+			BaseRef:       baseRef,
+			BaseSHA:       baseSHA,
+			HeadSHA:       headSHA,
+			Actor:         actor,
+			ActorHasWrite: canWrite,
+			Manual:        manual,
 		}, true, nil
+
+	case *github.IssueCommentEvent:
+		if e.GetAction() != "created" || e.Repo == nil || e.Repo.Owner == nil ||
+			e.Repo.Name == nil || e.Issue == nil || e.Comment == nil ||
+			e.Issue.PullRequestLinks == nil || e.Sender == nil ||
+			strings.EqualFold(e.Sender.GetType(), "Bot") {
+			return policy.Trigger{}, false, nil
+		}
+		matched := false
+		for _, line := range strings.Split(e.Comment.GetBody(), "\n") {
+			if reviewMention.MatchString(line) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return policy.Trigger{}, false, nil
+		}
+
+		owner, name := e.Repo.Owner.GetLogin(), e.Repo.GetName()
+		actor := eventSender(e.Sender)
+		canWrite := d.actorCanWrite(ctx, owner, name, actor)
+		trigger := policy.Trigger{
+			Kind:          policy.TriggerPullRequest,
+			Owner:         owner,
+			Name:          name,
+			Number:        int(e.Issue.GetNumber()),
+			Actor:         actor,
+			ActorHasWrite: canWrite,
+			Manual:        true,
+		}
+		if !canWrite {
+			return trigger, true, nil
+		}
+		if d.loadPR == nil {
+			return policy.Trigger{}, false, fmt.Errorf("load pull request: loader not configured")
+		}
+		baseSHA, headSHA, err := d.loadPR(ctx, owner, name, trigger.Number)
+		if err != nil {
+			return policy.Trigger{}, false, fmt.Errorf("load pull request: %w", err)
+		}
+		trigger.BaseSHA, trigger.HeadSHA = baseSHA, headSHA
+		return trigger, true, nil
 
 	case *github.IssuesEvent:
 		if e.Repo == nil || e.Repo.Owner == nil || e.Repo.Name == nil || e.Issue == nil || e.Label == nil {
@@ -155,13 +229,25 @@ func (d *Dispatcher) triggerFromEvent(event any) (policy.Trigger, bool, error) {
 			Number:        int(e.Issue.GetNumber()),
 			DefaultBranch: e.Repo.GetDefaultBranch(),
 			Actor:         eventSender(e.Sender),
-			ActorHasWrite: false, // resolved from perms/TripleA in a later phase
+			ActorHasWrite: false,
 			LabelsApplied: []string{e.Label.GetName()},
 		}, true, nil
 
 	default:
 		return policy.Trigger{}, false, nil
 	}
+}
+
+func (d *Dispatcher) actorCanWrite(ctx context.Context, owner, name, actor string) bool {
+	if d.authorize == nil {
+		return false
+	}
+	allowed, err := d.authorize(ctx, owner, name, actor)
+	if err != nil {
+		log.Printf("authorize %s/%s actor %q: %v", owner, name, actor, err)
+		return false
+	}
+	return allowed
 }
 
 func eventSender(u *github.User) string {

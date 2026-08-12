@@ -104,10 +104,11 @@ func main() {
 			}).Run(ctx, runID)
 		case "webhook_pull_request":
 			_, runErr = (&runpipe.ReviewPipeline{
-				Store:   l,
-				Agent:   agent,
-				Exec:    exec,
-				Sandbox: newReviewSandboxer(),
+				Store:       l,
+				Agent:       agent,
+				Acknowledge: exec.AcknowledgeReview,
+				Exec:        exec,
+				Sandbox:     newReviewSandboxer(),
 			}).Run(ctx, runID)
 		}
 		if runErr != nil {

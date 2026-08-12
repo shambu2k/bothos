@@ -66,6 +66,7 @@ func (s reviewDirSandbox) Exec(context.Context, string, ...string) (runtime.Outp
 func TestReviewPipelineEndToEnd(t *testing.T) {
 	dir, baseSHA, headSHA := newReviewPipelineRepo(t)
 	grant := reviewGrant(t, "review-run", baseSHA, headSHA)
+	grant.Manual = true
 	store := &reviewStore{run: ledger.Run{ID: grant.RunID, Trigger: "webhook_pull_request", Grant: mustReviewJSON(t, grant)}}
 	exec := &reviewExecutor{}
 	var gotTask runtime.ReviewTask
@@ -85,13 +86,21 @@ func TestReviewPipelineEndToEnd(t *testing.T) {
 		}
 		return runtime.RunResult{Intents: []intent.Envelope{reviewEnvelope(t, grant.RunID, model)}}, nil
 	})
+	acknowledged := false
 	pipeline := &ReviewPipeline{
 		Store: store,
 		Agent: agent,
 		Exec:  exec,
+		Acknowledge: func(context.Context, intent.Grant) error {
+			acknowledged = true
+			return context.DeadlineExceeded
+		},
 		Sandbox: func(_ context.Context, repo string, pr int, base, head string) (runtime.Sandbox, error) {
 			if repo != "acme/widget" || pr != 7 || base != baseSHA || head != headSHA {
 				t.Fatalf("sandbox args = %q #%d %s %s", repo, pr, base, head)
+			}
+			if !acknowledged {
+				t.Fatal("sandbox started before manual acknowledgement")
 			}
 			return reviewDirSandbox{dir: dir}, nil
 		},
