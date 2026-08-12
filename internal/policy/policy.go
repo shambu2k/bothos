@@ -65,6 +65,7 @@ type Rules struct {
 	Enabled        bool
 	AllowedLabels  []string
 	ActorAllowlist []string
+	AutoReview     bool
 	DeniedPaths    []string
 }
 
@@ -95,6 +96,9 @@ func Decide(t Trigger, r Rules, runID string, now time.Time) (intent.Grant, erro
 	case TriggerPullRequest:
 		if t.Manual && !t.ActorHasWrite {
 			return intent.Grant{}, fmt.Errorf("%w: manual review actor %q lacks write permission", ErrPolicyDenied, t.Actor)
+		}
+		if !t.Manual && !r.AutoReview {
+			return intent.Grant{}, fmt.Errorf("%w: automatic review disabled", ErrPolicyDenied)
 		}
 		// Review is a read-only workload. Fork PRs execute untrusted code in a
 		// sandbox with no write token, so the grant itself never exceeds

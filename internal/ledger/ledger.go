@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shambu2k/bothos/internal/policy"
 	"github.com/shambu2k/bothos/internal/scan"
 )
 
@@ -41,6 +42,27 @@ func (p *Postgres) Migrate(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// RulesForRepo loads deployment-owned policy. A repository absent from
+// repo_config is disabled by default.
+func (p *Postgres) RulesForRepo(ctx context.Context, owner, name string) (policy.Rules, error) {
+	var rules policy.Rules
+	err := p.pool.QueryRow(ctx, `
+		SELECT enabled, denied_paths, allowed_labels, actor_allowlist, auto_review
+		FROM repo_config
+		WHERE owner=$1 AND name=$2
+	`, owner, name).Scan(
+		&rules.Enabled,
+		&rules.DeniedPaths,
+		&rules.AllowedLabels,
+		&rules.ActorAllowlist,
+		&rules.AutoReview,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return policy.Rules{Enabled: false, AutoReview: false}, nil
+	}
+	return rules, err
 }
 
 // ---------- executor.Ledger (intent idempotency) ----------

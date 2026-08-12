@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/shambu2k/bothos/internal/intent"
+	"github.com/shambu2k/bothos/internal/policy"
 	"github.com/shambu2k/bothos/internal/scan"
 	"github.com/shambu2k/bothos/internal/testdb"
 )
@@ -23,7 +24,7 @@ func newTestStore(t *testing.T) *Postgres {
 		st.Close()
 		t.Fatalf("migrate: %v", err)
 	}
-	testdb.Truncate(t, dsn, "intents", "runs", "findings", "capability_gaps")
+	testdb.Truncate(t, dsn, "intents", "runs", "findings", "capability_gaps", "repo_config")
 	t.Cleanup(st.Close)
 	return st
 }
@@ -321,5 +322,44 @@ func TestSetRunRefPersists(t *testing.T) {
 	}
 	if ref != "Jivanex/JIVA_BACKEND#48" {
 		t.Fatalf("github_ref = %q", ref)
+	}
+}
+
+func TestRulesForRepoIsDeploymentOwnedAndDefaultOff(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	_, err := store.pool.Exec(ctx, `
+		INSERT INTO repo_config (
+			repo_id, account_id, owner, name, default_branch, enabled,
+			denied_paths, allowed_labels, actor_allowlist, auto_review
+		) VALUES (
+			'acme/widget', 'acct', 'acme', 'widget', 'main', true,
+			ARRAY['private/**'], ARRAY['kind/upgrade'], ARRAY['alice'], true
+		)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := store.RulesForRepo(ctx, "acme", "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := policy.Rules{
+		Enabled: true, AutoReview: true,
+		DeniedPaths: []string{"private/**"}, AllowedLabels: []string{"kind/upgrade"}, ActorAllowlist: []string{"alice"},
+	}
+	if rules.Enabled != want.Enabled || rules.AutoReview != want.AutoReview ||
+		len(rules.DeniedPaths) != 1 || rules.DeniedPaths[0] != want.DeniedPaths[0] ||
+		len(rules.AllowedLabels) != 1 || rules.AllowedLabels[0] != want.AllowedLabels[0] ||
+		len(rules.ActorAllowlist) != 1 || rules.ActorAllowlist[0] != want.ActorAllowlist[0] {
+		t.Fatalf("rules = %+v, want %+v", rules, want)
+	}
+
+	missing, err := store.RulesForRepo(ctx, "other", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Enabled || missing.AutoReview {
+		t.Fatalf("missing repository defaulted on: %+v", missing)
 	}
 }
