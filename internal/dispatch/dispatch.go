@@ -222,14 +222,16 @@ func (d *Dispatcher) triggerFromEvent(ctx context.Context, event any) (policy.Tr
 		if e.GetAction() != "labeled" {
 			return policy.Trigger{}, false, nil
 		}
+		owner, name := e.Repo.Owner.GetLogin(), e.Repo.GetName()
+		actor := eventSender(e.Sender)
 		return policy.Trigger{
 			Kind:          policy.TriggerIssueLabeled,
-			Owner:         e.Repo.Owner.GetLogin(),
-			Name:          e.Repo.GetName(),
+			Owner:         owner,
+			Name:          name,
 			Number:        int(e.Issue.GetNumber()),
 			DefaultBranch: e.Repo.GetDefaultBranch(),
-			Actor:         eventSender(e.Sender),
-			ActorHasWrite: false,
+			Actor:         actor,
+			ActorHasWrite: d.actorCanWrite(ctx, owner, name, actor),
 			LabelsApplied: []string{e.Label.GetName()},
 		}, true, nil
 

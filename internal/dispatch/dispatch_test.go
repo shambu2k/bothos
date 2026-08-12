@@ -65,6 +65,27 @@ func labeledIssue(actor, label string, number int) *github.IssuesEvent {
 	}
 }
 
+func TestLabeledIssueChecksActorWritePermission(t *testing.T) {
+	authorizeCalls := 0
+	d := &Dispatcher{
+		authorize: func(_ context.Context, owner, name, actor string) (bool, error) {
+			authorizeCalls++
+			if owner != "shambu2k" || name != "repo" || actor != "maintainer" {
+				t.Fatalf("authorization args = %s/%s %s", owner, name, actor)
+			}
+			return true, nil
+		},
+	}
+
+	trigger, handled, err := d.triggerFromEvent(context.Background(), labeledIssue("maintainer", "kind/upgrade", 5))
+	if err != nil || !handled {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if authorizeCalls != 1 || !trigger.ActorHasWrite {
+		t.Fatalf("trigger=%+v authorization calls=%d", trigger, authorizeCalls)
+	}
+}
+
 func TestAllowLabeledIssueRecordsRunAndEnqueues(t *testing.T) {
 	ctx := context.Background()
 	d, _, q := newTestEnv(t)
@@ -98,11 +119,36 @@ func TestAllowLabeledIssueRecordsRunAndEnqueues(t *testing.T) {
 	}
 }
 
+func TestLabeledIssueAuthorizationFailureRecordsDenyWithoutJob(t *testing.T) {
+	ctx := context.Background()
+	d, _, q := newTestEnv(t)
+	d.authorize = func(context.Context, string, string, string) (bool, error) {
+		return false, context.DeadlineExceeded
+	}
+
+	if err := d.HandleEvent(ctx, labeledIssue("maintainer", "kind/upgrade", 5)); err != nil {
+		t.Fatal(err)
+	}
+
+	var decision string
+	if err := q.Pool().QueryRow(ctx, `SELECT decision FROM runs WHERE id='run-fixed'`).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	var jobs int
+	if err := q.Pool().QueryRow(ctx, `SELECT count(*) FROM river_job WHERE args->>'run_id'='run-fixed'`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if decision != "deny" || jobs != 0 {
+		t.Fatalf("decision=%q jobs=%d", decision, jobs)
+	}
+}
+
 func TestDeniedLabeledIssueRecordsRunButNoJob(t *testing.T) {
 	ctx := context.Background()
 	d, _, q := newTestEnv(t)
+	d.authorize = func(context.Context, string, string, string) (bool, error) { return false, nil }
 
-	// unauthorized actor applying the trigger label
+	// A non-allowlisted actor without repository write permission applies the trigger label.
 	if err := d.HandleEvent(ctx, labeledIssue("attacker", "kind/upgrade", 5)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
