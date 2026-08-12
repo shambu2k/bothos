@@ -40,6 +40,8 @@ func newFakeGitHub(t *testing.T) (*github.Client, *[]recordedRequest) {
 			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
 			fmt.Fprint(w, `{"number":123,"html_url":"https://github.com/shambu2k/repo/pull/123"}`)
+		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/issues/comments/"):
+			fmt.Fprint(w, `{"id":77}`)
 		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/pulls/"):
 			fmt.Fprint(w, `{}`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews"):
@@ -130,41 +132,127 @@ func TestWriterUpdatePR(t *testing.T) {
 	}
 }
 
-func TestWriterPostReview(t *testing.T) {
-	w, rec := newAdapter(t, testToken)
-	_, err := w.PostReview(t.Context(), Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}},
+func TestWriterPostReviewCreatesAggregateComment(t *testing.T) {
+	writer, requests := newAdapter(t, testToken)
+	ref, commentID, err := writer.PostReview(t.Context(), Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}},
 		PostReviewWrite{
 			PRNumber: 9,
 			Verdict:  intent.VerdictRequestChanges,
-			Summary:  "needs work",
-			Comments: []intent.ReviewComment{{Path: "a.go", Line: 3, Side: "RIGHT", Body: "here"}},
+			Summary:  "needs <!-- hidden --> work",
+			Comments: []intent.ReviewComment{
+				{Path: "package.json", Line: 3, Side: "RIGHT", Body: "dependency_delta: tar changed", Verified: true, Evidence: "<token>"},
+				{Path: "a.go", Line: 8, Side: "RIGHT", Body: "consider <!-- marker --> this"},
+			},
 		})
 	if err != nil {
 		t.Fatalf("PostReview: %v", err)
 	}
-	r := (*rec)[0]
-	if r.method != "POST" || r.path != "/repos/shambu2k/repo/pulls/9/reviews" {
-		t.Fatalf("call = %s %s", r.method, r.path)
+	if ref != "shambu2k/repo#9" || commentID != 9 {
+		t.Fatalf("ref=%q commentID=%d", ref, commentID)
 	}
-	if r.body["event"] != "REQUEST_CHANGES" {
-		t.Errorf("event = %v, want REQUEST_CHANGES", r.body["event"])
+	if len(*requests) != 3 {
+		t.Fatalf("requests = %+v", *requests)
 	}
-	comments := r.body["comments"].([]any)
-	c := comments[0].(map[string]any)
-	if c["path"] != "a.go" || c["line"] != float64(3) || c["side"] != "RIGHT" || c["body"] != "here" {
-		t.Errorf("comment = %v", c)
+	create := (*requests)[2]
+	if create.method != http.MethodPost || create.path != "/repos/shambu2k/repo/issues/9/comments" {
+		t.Fatalf("create = %+v", create)
+	}
+	body, _ := create.body["body"].(string)
+	for _, want := range []string{
+		reviewCommentMarker,
+		"## Bothos review",
+		"### [opinion] Summary",
+		"### [verified] Deterministic findings",
+		"[verified] dependency_delta: tar changed",
+		"&lt;token&gt;",
+		"### [opinion] Model comments",
+		"[opinion] consider &lt;!-- marker --&gt; this",
+		"[opinion] Recommendation: request changes",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Index(body, "[verified] dependency_delta") > strings.Index(body, "[opinion] consider") {
+		t.Fatalf("opinion rendered before verified finding:\n%s", body)
+	}
+	for _, request := range *requests {
+		if strings.Contains(request.path, "/pulls/9/reviews") {
+			t.Fatalf("review approval endpoint called: %+v", request)
+		}
 	}
 }
 
-func TestWriterPostReviewCommentEvent(t *testing.T) {
-	w, rec := newAdapter(t, testToken)
-	_, err := w.PostReview(t.Context(), Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}},
-		PostReviewWrite{PRNumber: 9, Verdict: intent.VerdictComment, Summary: "ok"})
+func TestWriterPostReviewEditsMappedComment(t *testing.T) {
+	writer, requests := newAdapter(t, testToken)
+	_, commentID, err := writer.PostReview(t.Context(), Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}},
+		PostReviewWrite{PRNumber: 9, CommentID: 77, Verdict: intent.VerdictComment, Summary: "updated"})
 	if err != nil {
 		t.Fatalf("PostReview: %v", err)
 	}
-	if (*rec)[0].body["event"] != "COMMENT" {
-		t.Errorf("event = %v, want COMMENT", (*rec)[0].body["event"])
+	if commentID != 77 || len(*requests) != 1 {
+		t.Fatalf("commentID=%d requests=%+v", commentID, *requests)
+	}
+	if request := (*requests)[0]; request.method != http.MethodPatch || request.path != "/repos/shambu2k/repo/issues/comments/77" {
+		t.Fatalf("edit = %+v", request)
+	}
+}
+
+func TestWriterPostReviewRecoversOwnedMarker(t *testing.T) {
+	edits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
+			fmt.Fprint(w, `{"login":"bothos-bot"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			fmt.Fprint(w, `[{"id":55,"body":"<!-- bothos-pr-review -->\nqueued","user":{"login":"bothos-bot"}}]`)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/comments/55"):
+			edits++
+			fmt.Fprint(w, `{"id":55}`)
+		default:
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL + "/")
+	writer := NewGitHubWriter(func(string) *github.Client {
+		client := github.NewClient(server.Client())
+		client.BaseURL = base
+		return client
+	})
+	cred := Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}}
+	_, commentID, err := writer.PostReview(t.Context(), cred, PostReviewWrite{PRNumber: 9, Verdict: intent.VerdictComment})
+	if err != nil || commentID != 55 || edits != 1 {
+		t.Fatalf("commentID=%d edits=%d err=%v", commentID, edits, err)
+	}
+}
+
+func TestWriterPostReviewReplacesDeletedMappedComment(t *testing.T) {
+	creates := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/comments/77"):
+			http.Error(w, "deleted", http.StatusNotFound)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/9/comments"):
+			creates++
+			fmt.Fprint(w, `{"id":88}`)
+		default:
+			http.Error(w, "unexpected", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL + "/")
+	writer := NewGitHubWriter(func(string) *github.Client {
+		client := github.NewClient(server.Client())
+		client.BaseURL = base
+		return client
+	})
+	cred := Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}}
+	_, commentID, err := writer.PostReview(t.Context(), cred, PostReviewWrite{PRNumber: 9, CommentID: 77, Verdict: intent.VerdictComment})
+	if err != nil || commentID != 88 || creates != 1 {
+		t.Fatalf("commentID=%d creates=%d err=%v", commentID, creates, err)
 	}
 }
 
@@ -187,7 +275,7 @@ func TestWriterPostComment(t *testing.T) {
 func TestWriterAcknowledgeReviewCreatesExactMarker(t *testing.T) {
 	writer, requests := newAdapter(t, testToken)
 	cred := Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}}
-	if _, err := writer.AcknowledgeReview(context.Background(), cred, 42); err != nil {
+	if _, _, err := writer.AcknowledgeReview(context.Background(), cred, 42); err != nil {
 		t.Fatal(err)
 	}
 	if len(*requests) != 3 {
@@ -233,7 +321,7 @@ func TestWriterAcknowledgeReviewOnlyTrustsOwnedMarker(t *testing.T) {
 				return client
 			})
 			cred := Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}}
-			if _, err := writer.AcknowledgeReview(context.Background(), cred, 42); err != nil {
+			if _, _, err := writer.AcknowledgeReview(context.Background(), cred, 42); err != nil {
 				t.Fatal(err)
 			}
 			if creates != tt.wantCreates {

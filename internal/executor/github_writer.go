@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"html"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -93,65 +94,131 @@ func (w *githubWriter) UpdatePR(ctx context.Context, cred Credential, spec Updat
 	return w.ref(cred, spec.PRNumber), nil
 }
 
-func (w *githubWriter) PostReview(ctx context.Context, cred Credential, spec PostReviewWrite) (string, error) {
+func (w *githubWriter) PostReview(ctx context.Context, cred Credential, spec PostReviewWrite) (string, int64, error) {
 	client := w.newClient(cred.Token)
-	event := "COMMENT"
-	if spec.Verdict == intent.VerdictRequestChanges {
-		event = "REQUEST_CHANGES"
+	body := renderPostReview(spec)
+	commentID := spec.CommentID
+	if commentID == 0 {
+		var err error
+		commentID, err = findOwnedReviewComment(ctx, client, cred, spec.PRNumber)
+		if err != nil {
+			return "", 0, err
+		}
 	}
-	comments := make([]*github.DraftReviewComment, 0, len(spec.Comments))
-	for _, c := range spec.Comments {
-		comments = append(comments, &github.DraftReviewComment{
-			Path: github.String(c.Path),
-			Line: github.Int(c.Line),
-			Side: github.String(c.Side),
-			Body: github.String(c.Body),
+	if commentID != 0 {
+		comment, response, err := client.Issues.EditComment(ctx, cred.Repo.Owner, cred.Repo.Name, commentID, &github.IssueComment{
+			Body: github.String(body),
 		})
+		if err == nil {
+			return w.ref(cred, spec.PRNumber), comment.GetID(), nil
+		}
+		if response == nil || response.StatusCode != http.StatusNotFound {
+			return "", 0, err
+		}
 	}
-	_, _, err := client.PullRequests.CreateReview(ctx, cred.Repo.Owner, cred.Repo.Name, spec.PRNumber, &github.PullRequestReviewRequest{
-		Body:     github.String(spec.Summary),
-		Event:    github.String(event),
-		Comments: comments,
+
+	comment, _, err := client.Issues.CreateComment(ctx, cred.Repo.Owner, cred.Repo.Name, spec.PRNumber, &github.IssueComment{
+		Body: github.String(body),
 	})
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return w.ref(cred, spec.PRNumber), nil
+	return w.ref(cred, spec.PRNumber), comment.GetID(), nil
 }
 
-func (w *githubWriter) AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (string, error) {
+func (w *githubWriter) AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (string, int64, error) {
 	client := w.newClient(cred.Token)
+	commentID, err := findOwnedReviewComment(ctx, client, cred, prNumber)
+	if err != nil {
+		return "", 0, err
+	}
+	if commentID != 0 {
+		return w.ref(cred, prNumber), commentID, nil
+	}
+	comment, _, err := client.Issues.CreateComment(ctx, cred.Repo.Owner, cred.Repo.Name, prNumber, &github.IssueComment{
+		Body: github.String(reviewQueuedBody),
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	return w.ref(cred, prNumber), comment.GetID(), nil
+}
+
+func findOwnedReviewComment(ctx context.Context, client *github.Client, cred Credential, prNumber int) (int64, error) {
 	user, _, err := client.Users.Get(ctx, "")
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	login := user.GetLogin()
 	if login == "" {
-		return "", fmt.Errorf("authenticated GitHub login is empty")
+		return 0, fmt.Errorf("authenticated GitHub login is empty")
 	}
 
 	options := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: 100}}
 	for {
 		comments, response, err := client.Issues.ListComments(ctx, cred.Repo.Owner, cred.Repo.Name, prNumber, options)
 		if err != nil {
-			return "", err
+			return 0, err
 		}
 		for _, comment := range comments {
 			if strings.EqualFold(comment.GetUser().GetLogin(), login) && strings.Contains(comment.GetBody(), reviewCommentMarker) {
-				return w.ref(cred, prNumber), nil
+				return comment.GetID(), nil
 			}
 		}
 		if response.NextPage == 0 {
-			break
+			return 0, nil
 		}
 		options.Page = response.NextPage
 	}
-	if _, _, err := client.Issues.CreateComment(ctx, cred.Repo.Owner, cred.Repo.Name, prNumber, &github.IssueComment{
-		Body: github.String(reviewQueuedBody),
-	}); err != nil {
-		return "", err
+}
+
+func renderPostReview(spec PostReviewWrite) string {
+	var body strings.Builder
+	body.WriteString(reviewCommentMarker)
+	body.WriteString("\n## Bothos review\n\n### [opinion] Summary\n\n")
+	body.WriteString(html.EscapeString(spec.Summary))
+	body.WriteString("\n")
+	if spec.Verdict == intent.VerdictRequestChanges {
+		body.WriteString("\n[opinion] Recommendation: request changes\n")
 	}
-	return w.ref(cred, prNumber), nil
+
+	hasVerified := false
+	for _, comment := range spec.Comments {
+		if comment.Verified {
+			hasVerified = true
+			break
+		}
+	}
+	if hasVerified {
+		body.WriteString("\n### [verified] Deterministic findings\n")
+		for _, comment := range spec.Comments {
+			if !comment.Verified {
+				continue
+			}
+			fmt.Fprintf(&body, "\n- [verified] %s — `%s:%d`\n", html.EscapeString(comment.Body), html.EscapeString(comment.Path), comment.Line)
+			body.WriteString("  <details><summary>Evidence</summary>\n\n  <pre>")
+			body.WriteString(html.EscapeString(comment.Evidence))
+			body.WriteString("</pre>\n  </details>\n")
+		}
+	}
+
+	hasOpinion := false
+	for _, comment := range spec.Comments {
+		if !comment.Verified {
+			hasOpinion = true
+			break
+		}
+	}
+	if hasOpinion {
+		body.WriteString("\n### [opinion] Model comments\n")
+		for _, comment := range spec.Comments {
+			if comment.Verified {
+				continue
+			}
+			fmt.Fprintf(&body, "\n- [opinion] %s — `%s:%d`\n", html.EscapeString(comment.Body), html.EscapeString(comment.Path), comment.Line)
+		}
+	}
+	return body.String()
 }
 
 func (w *githubWriter) PostComment(ctx context.Context, cred Credential, spec PostCommentWrite) (string, error) {

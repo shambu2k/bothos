@@ -65,6 +65,30 @@ func (p *Postgres) RulesForRepo(ctx context.Context, owner, name string) (policy
 	return rules, err
 }
 
+// ReviewCommentID returns the persistent aggregate comment for one pull request.
+func (p *Postgres) ReviewCommentID(ctx context.Context, repoID string, prNumber int) (int64, bool, error) {
+	var commentID int64
+	err := p.pool.QueryRow(ctx, `
+		SELECT comment_id FROM review_comments
+		WHERE repo_id=$1 AND pr_number=$2
+	`, repoID, prNumber).Scan(&commentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	return commentID, err == nil, err
+}
+
+// UpsertReviewComment records a recovered, created, or replacement comment.
+func (p *Postgres) UpsertReviewComment(ctx context.Context, repoID string, prNumber int, commentID int64) error {
+	_, err := p.pool.Exec(ctx, `
+		INSERT INTO review_comments (repo_id, pr_number, comment_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (repo_id, pr_number) DO UPDATE
+		SET comment_id=EXCLUDED.comment_id, updated_at=now()
+	`, repoID, prNumber, commentID)
+	return err
+}
+
 // ---------- executor.Ledger (intent idempotency) ----------
 
 // Lookup reports whether an idempotency key was already executed, returning

@@ -51,7 +51,10 @@ func (staticStore) Resolve(ctx context.Context, accountID string, scope intent.T
 	return "pat-static-test", nil
 }
 
-type memLedger struct{ refs map[string]string }
+type memLedger struct {
+	refs     map[string]string
+	comments map[string]int64
+}
 
 func (m *memLedger) Lookup(ctx context.Context, key string) (string, bool, error) {
 	ref, ok := m.refs[key]
@@ -59,6 +62,17 @@ func (m *memLedger) Lookup(ctx context.Context, key string) (string, bool, error
 }
 func (m *memLedger) Record(ctx context.Context, key, runID, ref string) error {
 	m.refs[key] = ref
+	return nil
+}
+func (m *memLedger) ReviewCommentID(_ context.Context, repoID string, prNumber int) (int64, bool, error) {
+	id, ok := m.comments[fmt.Sprintf("%s#%d", repoID, prNumber)]
+	return id, ok, nil
+}
+func (m *memLedger) UpsertReviewComment(_ context.Context, repoID string, prNumber int, commentID int64) error {
+	if m.comments == nil {
+		m.comments = map[string]int64{}
+	}
+	m.comments[fmt.Sprintf("%s#%d", repoID, prNumber)] = commentID
 	return nil
 }
 
@@ -78,11 +92,11 @@ func (w *recWriter) PushBranch(ctx context.Context, c executor.Credential, branc
 func (w *recWriter) UpdatePR(ctx context.Context, c executor.Credential, s executor.UpdatePRWrite) (string, error) {
 	return "", nil
 }
-func (w *recWriter) PostReview(ctx context.Context, c executor.Credential, s executor.PostReviewWrite) (string, error) {
-	return "", nil
+func (w *recWriter) PostReview(ctx context.Context, c executor.Credential, s executor.PostReviewWrite) (string, int64, error) {
+	return "", 1, nil
 }
-func (w *recWriter) AcknowledgeReview(ctx context.Context, c executor.Credential, prNumber int) (string, error) {
-	return "", nil
+func (w *recWriter) AcknowledgeReview(ctx context.Context, c executor.Credential, prNumber int) (string, int64, error) {
+	return "", 1, nil
 }
 func (w *recWriter) PostComment(ctx context.Context, c executor.Credential, s executor.PostCommentWrite) (string, error) {
 	return "", nil
