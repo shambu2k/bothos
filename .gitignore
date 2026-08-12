@@ -26,3 +26,6 @@ adapter/pi/node_modules/
 .env.*
 !*.env.example
 /scan
+
+# Local planning docs — never commit
+.hermes/
