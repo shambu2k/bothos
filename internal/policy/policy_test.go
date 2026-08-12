@@ -112,6 +112,33 @@ func TestManualPullRequestRequiresWritePermission(t *testing.T) {
 	}
 }
 
+func TestManualReviewLabelRequiresConfiguredActor(t *testing.T) {
+	trigger := Trigger{
+		Kind: TriggerPullRequest, Owner: "o", Name: "n", Number: 9,
+		BaseSHA: "base", HeadSHA: "head", Actor: "collaborator", ActorHasWrite: true,
+		Manual: true, ReviewLabel: true,
+	}
+	if _, err := Decide(trigger, baseRules(), "run-label-denied", now); !errors.Is(err, ErrPolicyDenied) {
+		t.Fatalf("label review outside actor config = %v", err)
+	}
+
+	trigger.Actor = "shambu2k"
+	if _, err := Decide(trigger, baseRules(), "run-label-allowed", now); err != nil {
+		t.Fatalf("configured label review actor: %v", err)
+	}
+}
+
+func TestManualReviewCommentDoesNotRequireConfiguredActor(t *testing.T) {
+	trigger := Trigger{
+		Kind: TriggerPullRequest, Owner: "o", Name: "n", Number: 9,
+		BaseSHA: "base", HeadSHA: "head", Actor: "collaborator", ActorHasWrite: true,
+		Manual: true,
+	}
+	if _, err := Decide(trigger, baseRules(), "run-comment-allowed", now); err != nil {
+		t.Fatalf("write-capable comment reviewer: %v", err)
+	}
+}
+
 func TestAutomaticPullRequestRequiresAutoReview(t *testing.T) {
 	trigger := Trigger{
 		Kind: TriggerPullRequest, Owner: "o", Name: "n", Number: 9,

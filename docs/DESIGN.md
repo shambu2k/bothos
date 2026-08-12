@@ -22,7 +22,11 @@ pull-request number, base branch, or work branch.
 
 ## Review controls
 
-A review grant permits only `post_review`. It is scoped to one pull request and
+A `bothos/review` label grant is created only when the label sender is both
+listed in `actor_allowlist` and verified by GitHub to have `write`, `maintain`,
+or `admin` repository permission. The exact `@bothos review` comment path
+retains its GitHub permission check but does not use the label-actor list. A
+review grant permits only `post_review`. It is scoped to one pull request and
 to the base and head SHAs captured during dispatch. The worker verifies that the
 checked-out head matches the grant and that the review worktree remains clean.
 

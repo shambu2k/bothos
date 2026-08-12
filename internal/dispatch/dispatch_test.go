@@ -264,7 +264,7 @@ func TestManualReviewLabelAuthorizesAndCapturesSHAs(t *testing.T) {
 	if err != nil || !handled {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}
-	if authCalls != 1 || !trigger.Manual || !trigger.ActorHasWrite ||
+	if authCalls != 1 || !trigger.Manual || !trigger.ReviewLabel || !trigger.ActorHasWrite ||
 		trigger.BaseSHA != "base-sha" || trigger.HeadSHA != "head-sha" {
 		t.Fatalf("trigger = %+v authCalls=%d", trigger, authCalls)
 	}
@@ -286,7 +286,7 @@ func TestManualReviewMentionLoadsImmutableSHAs(t *testing.T) {
 	if err != nil || !handled {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}
-	if loadCalls != 1 || !trigger.Manual || trigger.BaseSHA != "loaded-base" || trigger.HeadSHA != "loaded-head" {
+	if loadCalls != 1 || !trigger.Manual || trigger.ReviewLabel || trigger.BaseSHA != "loaded-base" || trigger.HeadSHA != "loaded-head" {
 		t.Fatalf("trigger = %+v loadCalls=%d", trigger, loadCalls)
 	}
 }
@@ -413,7 +413,7 @@ func TestManualReviewOverridesAutomaticGate(t *testing.T) {
 	ctx := context.Background()
 	d, _, q := newTestEnv(t)
 	d.rules = func(context.Context, string, string) (policy.Rules, error) {
-		return policy.Rules{Enabled: true, AutoReview: false}, nil
+		return policy.Rules{Enabled: true, AutoReview: false, ActorAllowlist: []string{"maintainer"}}, nil
 	}
 	if err := d.HandleEvent(ctx, pullRequestLabelEvent("maintainer", "bothos/review")); err != nil {
 		t.Fatal(err)

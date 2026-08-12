@@ -177,6 +177,7 @@ func (d *Dispatcher) triggerFromEvent(ctx context.Context, event any) (policy.Tr
 			Actor:         actor,
 			ActorHasWrite: canWrite,
 			Manual:        manual,
+			ReviewLabel:   manual,
 		}, true, nil
 
 	case *github.IssueCommentEvent:

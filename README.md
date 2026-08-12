@@ -57,8 +57,10 @@ requested answer, apply an allowed label again to create a fresh run.
 
 ### Pull-request review
 
-Reviews are opt-in by default. They can be triggered by either applying the
-`bothos/review` label or posting a comment containing exactly:
+Reviews are opt-in by default. Applying `bothos/review` requires the label actor
+to be listed in `repo_config.actor_allowlist` **and** to hold GitHub `write`,
+`maintain`, or `admin` permission. An exact review comment requires only the
+same GitHub permission:
 
 ```text
 @bothos review

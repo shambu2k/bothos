@@ -56,6 +56,9 @@ type Trigger struct {
 	Actor         string
 	ActorHasWrite bool
 	Manual        bool
+	// ReviewLabel is true only when a pull-request review was triggered by the
+	// bothos/review label rather than an exact review comment.
+	ReviewLabel   bool
 	LabelsApplied []string
 
 	// IssueTitle and IssueBody are the webhook snapshot supplied to an issue
@@ -101,6 +104,9 @@ func Decide(t Trigger, r Rules, runID string, now time.Time) (intent.Grant, erro
 	case TriggerPullRequest:
 		if t.Manual && !t.ActorHasWrite {
 			return intent.Grant{}, fmt.Errorf("%w: manual review actor %q lacks write permission", ErrPolicyDenied, t.Actor)
+		}
+		if t.ReviewLabel && !containsStr(r.ActorAllowlist, t.Actor) {
+			return intent.Grant{}, fmt.Errorf("%w: review-label actor %q is not configured", ErrPolicyDenied, t.Actor)
 		}
 		if !t.Manual && !r.AutoReview {
 			return intent.Grant{}, fmt.Errorf("%w: automatic review disabled", ErrPolicyDenied)

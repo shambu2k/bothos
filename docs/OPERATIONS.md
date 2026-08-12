@@ -44,13 +44,16 @@ parsing the event. A handled event always produces a ledger decision:
 - a denied event creates a `denied` run and performs no GitHub action;
 - unrelated events are acknowledged without creating a run.
 
-Manual review labels and comments require GitHub `write`, `maintain`, or `admin`
-permission for the delivery actor. A labeled-issue trigger requires all three:
-an allowed label, an actor listed in that repository's `actor_allowlist`, and
-that actor's GitHub `write`, `maintain`, or `admin` permission. An empty
-`actor_allowlist` denies every labeled-issue trigger. The gateway uses
-`GITHUB_READ_TOKEN` for permission lookup; a missing token or failed lookup
-denies the trigger.
+Manual review commands require GitHub `write`, `maintain`, or `admin` permission
+for the delivery actor. Applying the `bothos/review` pull-request label also
+requires that actor to appear in the repository's `actor_allowlist`; an empty
+list denies every label-triggered review. An exact `@bothos review` comment
+continues to require GitHub permission only. A labeled-issue trigger requires
+all three: an allowed label, an actor listed in that repository's
+`actor_allowlist`, and that actor's GitHub `write`, `maintain`, or `admin`
+permission. An empty `actor_allowlist` denies every labeled-issue trigger. The
+gateway uses `GITHUB_READ_TOKEN` for permission lookup; a missing token or
+failed lookup denies the trigger.
 
 ## Pull-request review
 
