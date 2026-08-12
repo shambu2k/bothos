@@ -81,6 +81,9 @@ func (w *recWriter) UpdatePR(ctx context.Context, c executor.Credential, s execu
 func (w *recWriter) PostReview(ctx context.Context, c executor.Credential, s executor.PostReviewWrite) (string, error) {
 	return "", nil
 }
+func (w *recWriter) AcknowledgeReview(ctx context.Context, c executor.Credential, prNumber int) (string, error) {
+	return "", nil
+}
 func (w *recWriter) PostComment(ctx context.Context, c executor.Credential, s executor.PostCommentWrite) (string, error) {
 	return "", nil
 }

@@ -93,6 +93,7 @@ type GitHubWriter interface {
 	OpenPR(ctx context.Context, cred Credential, spec OpenPRWrite) (ref string, err error)
 	UpdatePR(ctx context.Context, cred Credential, spec UpdatePRWrite) (ref string, err error)
 	PostReview(ctx context.Context, cred Credential, spec PostReviewWrite) (ref string, err error)
+	AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (ref string, err error)
 	PostComment(ctx context.Context, cred Credential, spec PostCommentWrite) (ref string, err error)
 	SetLabels(ctx context.Context, cred Credential, spec SetLabelsWrite) (ref string, err error)
 	// PushBranch pushes a locally-committed work branch (in worktree) to the
@@ -225,6 +226,29 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 		return Result{}, fmt.Errorf("ledger record: %w", err)
 	}
 	return Result{Kind: env.Kind, GitHubRef: ref}, nil
+}
+
+// AcknowledgeReview posts the trusted manual-review placeholder with the
+// executor-only comment credential. The writer recovers an existing owned
+// marker, making retries idempotent without exposing a write token upstream.
+func (e *Executor) AcknowledgeReview(ctx context.Context, grant intent.Grant) error {
+	if grant.Scope.Kind != intent.ScopePullRequest || grant.Scope.Number == 0 {
+		return fmt.Errorf("acknowledge review requires pull-request scope")
+	}
+	pat, err := e.store.Resolve(ctx, grant.Repo.AccountID, intent.TokenIssuesWrite)
+	if err != nil {
+		return fmt.Errorf("resolve token: %w", err)
+	}
+	credential := Credential{
+		AccountID: grant.Repo.AccountID,
+		Scope:     intent.TokenIssuesWrite,
+		Token:     pat,
+		Repo:      grant.Repo,
+	}
+	if _, err := e.gh.AcknowledgeReview(ctx, credential, grant.Scope.Number); err != nil {
+		return fmt.Errorf("acknowledge review: %w", err)
+	}
+	return nil
 }
 
 func (e *Executor) checkWorktreeDiff(ctx context.Context, g intent.Grant, worktree string) error {

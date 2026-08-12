@@ -92,6 +92,25 @@ func TestPullRequestYieldReadOnlyReview(t *testing.T) {
 	}
 }
 
+func TestManualPullRequestRequiresWritePermission(t *testing.T) {
+	trigger := Trigger{
+		Kind: TriggerPullRequest, Owner: "o", Name: "n", Number: 9,
+		BaseSHA: "base", HeadSHA: "head", Actor: "shambu2k", Manual: true,
+	}
+	if _, err := Decide(trigger, baseRules(), "run-manual-denied", now); !errors.Is(err, ErrPolicyDenied) {
+		t.Fatalf("manual review without write permission = %v", err)
+	}
+
+	trigger.ActorHasWrite = true
+	grant, err := Decide(trigger, baseRules(), "run-manual-allowed", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !grant.Manual {
+		t.Fatalf("manual flag not copied to grant: %+v", grant)
+	}
+}
+
 func TestIssueLabeledAllowsOpenPR(t *testing.T) {
 	g, err := Decide(Trigger{
 		Kind: TriggerIssueLabeled, Owner: "o", Name: "n", Number: 5,

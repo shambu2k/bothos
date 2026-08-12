@@ -55,6 +55,7 @@ type Trigger struct {
 	DefaultBranch string
 	Actor         string
 	ActorHasWrite bool
+	Manual        bool
 	LabelsApplied []string
 }
 
@@ -81,6 +82,7 @@ func Decide(t Trigger, r Rules, runID string, now time.Time) (intent.Grant, erro
 		DeniedPaths: r.DeniedPaths,
 		Limits:      intent.DefaultLimits(),
 		IssuedAt:    now,
+		Manual:      t.Manual,
 		ExpiresAt:   now.Add(time.Hour),
 	}
 
@@ -91,6 +93,9 @@ func Decide(t Trigger, r Rules, runID string, now time.Time) (intent.Grant, erro
 		base.TokenScope = intent.TokenContentsWrite
 
 	case TriggerPullRequest:
+		if t.Manual && !t.ActorHasWrite {
+			return intent.Grant{}, fmt.Errorf("%w: manual review actor %q lacks write permission", ErrPolicyDenied, t.Actor)
+		}
 		// Review is a read-only workload. Fork PRs execute untrusted code in a
 		// sandbox with no write token, so the grant itself never exceeds
 		// read_only — enforced structurally here.

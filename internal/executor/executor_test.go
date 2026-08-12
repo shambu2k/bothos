@@ -83,6 +83,7 @@ type fakeWriter struct {
 	postRev   func(ctx context.Context, cred Credential, spec PostReviewWrite) (string, error)
 	postCmnt  func(ctx context.Context, cred Credential, spec PostCommentWrite) (string, error)
 	setLabels func(ctx context.Context, cred Credential, spec SetLabelsWrite) (string, error)
+	ackReview func(ctx context.Context, cred Credential, prNumber int) (string, error)
 	push      func(ctx context.Context, cred Credential, branch, worktree string) error
 
 	lastOpenPR *OpenPRWrite
@@ -119,6 +120,14 @@ func (f *fakeWriter) PostReview(ctx context.Context, c Credential, s PostReviewW
 	}
 	return f.postRev(ctx, c, s)
 }
+func (f *fakeWriter) AcknowledgeReview(ctx context.Context, c Credential, prNumber int) (string, error) {
+	f.callCount++
+	if f.ackReview == nil {
+		return "shambu2k/repo#9", nil
+	}
+	return f.ackReview(ctx, c, prNumber)
+}
+
 func (f *fakeWriter) PostComment(ctx context.Context, c Credential, s PostCommentWrite) (string, error) {
 	f.callCount++
 	if f.postCmnt == nil {
@@ -447,6 +456,27 @@ func TestExecutePostCommentEmptyBodyStopsBeforeWrite(t *testing.T) {
 	assertErr(t, err, intent.ErrMalformed)
 	if w.callCount != 0 {
 		t.Fatal("writer called for empty comment")
+	}
+}
+
+func TestAcknowledgeReviewUsesCommentCredential(t *testing.T) {
+	grant := testGrant(func(g *intent.Grant) {
+		g.TokenScope = intent.TokenReadOnly
+		g.Scope = intent.Scope{Kind: intent.ScopePullRequest, Number: 42}
+	})
+	store := &fakeStore{}
+	writer := &fakeWriter{ackReview: func(_ context.Context, cred Credential, number int) (string, error) {
+		if cred.Scope != intent.TokenIssuesWrite || number != 42 {
+			t.Fatalf("ack credential=%q number=%d", cred.Scope, number)
+		}
+		return "owner/repo#42", nil
+	}}
+	ex := newExecutor(store, &fakeLedger{}, writer, &fakeDiff{}, testNow)
+	if err := ex.AcknowledgeReview(context.Background(), grant); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.calls) != 1 || store.calls[0].scope != intent.TokenIssuesWrite || writer.callCount != 1 {
+		t.Fatalf("store=%+v writer calls=%d", store.calls, writer.callCount)
 	}
 }
 

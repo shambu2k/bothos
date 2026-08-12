@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -21,11 +22,12 @@ type ReviewSandboxer func(ctx context.Context, repo string, prNumber int, baseSH
 
 // ReviewPipeline orchestrates one deterministic, read-only pull-request review.
 type ReviewPipeline struct {
-	Store   Store
-	Agent   runtime.AgentRuntime
-	Exec    Executor
-	Sandbox ReviewSandboxer
-	Checks  func(context.Context, string) ([]review.Finding, error)
+	Store       Store
+	Agent       runtime.AgentRuntime
+	Acknowledge func(context.Context, intent.Grant) error
+	Exec        Executor
+	Sandbox     ReviewSandboxer
+	Checks      func(context.Context, string) ([]review.Finding, error)
 }
 
 var classificationToken = regexp.MustCompile(`(?i)\[(verified|opinion)\]`)
@@ -55,6 +57,14 @@ func (p *ReviewPipeline) Run(ctx context.Context, runID string) (string, error) 
 	}
 	if time.Now().After(grant.ExpiresAt) {
 		return fail(fmt.Errorf("grant expired at %s (dispatched %s)", grant.ExpiresAt, grant.IssuedAt))
+	}
+	if grant.Manual && p.Acknowledge != nil {
+		ackCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err := p.Acknowledge(ackCtx, grant)
+		cancel()
+		if err != nil {
+			log.Printf("run %s: review acknowledgement: %v", runID, err)
+		}
 	}
 
 	sandbox, err := p.Sandbox(ctx, grant.Repo.Owner+"/"+grant.Repo.Name, grant.Scope.Number, grant.Scope.BaseSHA, grant.Scope.HeadSHA)

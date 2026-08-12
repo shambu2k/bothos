@@ -127,6 +127,7 @@ type Grant struct {
 	AllowedKinds []Kind     `json:"allowed_kinds"`
 	TokenScope   TokenScope `json:"token_scope"`
 	Limits       Limits     `json:"limits"`
+	Manual       bool       `json:"manual"`
 
 	// DeniedPaths are gitignore-style globs the resulting diff may not touch.
 	// Deny wins over any allow. See defaultDeniedPaths in validate.go.

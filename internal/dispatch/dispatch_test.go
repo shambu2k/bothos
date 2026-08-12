@@ -41,7 +41,12 @@ func newTestEnv(t *testing.T) (*Dispatcher, *ledger.Postgres, *queue.Queue) {
 
 	testdb.Truncate(t, dsn, "runs", "intents", "river_job")
 
-	d := New(l, q, baseRules)
+	d := New(l, q, baseRules,
+		func(context.Context, string, string, string) (bool, error) { return true, nil },
+		func(context.Context, string, string, int) (string, string, error) {
+			return "base-loaded", "head-loaded", nil
+		},
+	)
 	d.newRun = func() string { return "run-fixed" }
 	return d, l, q
 }
@@ -152,7 +157,7 @@ func TestPullRequestEventDispatched(t *testing.T) {
 			Name:  github.String("repo"),
 		},
 		PullRequest: &github.PullRequest{
-			Base: &github.PullRequestBranch{Ref: github.String("main")},
+			Base: &github.PullRequestBranch{Ref: github.String("main"), SHA: github.String("base123")},
 			Head: &github.PullRequestBranch{Ref: github.String("feat"), SHA: github.String("abc123")},
 		},
 	}
@@ -167,6 +172,144 @@ func TestPullRequestEventDispatched(t *testing.T) {
 	}
 	if decision != "allow" || scopeKind != "pull_request" {
 		t.Fatalf("decision=%q scope=%q", decision, scopeKind)
+	}
+}
+
+func TestManualReviewLabelAuthorizesAndCapturesSHAs(t *testing.T) {
+	authCalls := 0
+	d := &Dispatcher{
+		authorize: func(_ context.Context, owner, name, actor string) (bool, error) {
+			authCalls++
+			if owner != "shambu2k" || name != "repo" || actor != "maintainer" {
+				t.Fatalf("authorization args = %s/%s %s", owner, name, actor)
+			}
+			return true, nil
+		},
+	}
+	event := pullRequestLabelEvent("maintainer", "bothos/review")
+	trigger, handled, err := d.triggerFromEvent(context.Background(), event)
+	if err != nil || !handled {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if authCalls != 1 || !trigger.Manual || !trigger.ActorHasWrite ||
+		trigger.BaseSHA != "base-sha" || trigger.HeadSHA != "head-sha" {
+		t.Fatalf("trigger = %+v authCalls=%d", trigger, authCalls)
+	}
+}
+
+func TestManualReviewMentionLoadsImmutableSHAs(t *testing.T) {
+	loadCalls := 0
+	d := &Dispatcher{
+		authorize: func(context.Context, string, string, string) (bool, error) { return true, nil },
+		loadPR: func(_ context.Context, owner, name string, number int) (string, string, error) {
+			loadCalls++
+			if owner != "shambu2k" || name != "repo" || number != 12 {
+				t.Fatalf("loader args = %s/%s#%d", owner, name, number)
+			}
+			return "loaded-base", "loaded-head", nil
+		},
+	}
+	trigger, handled, err := d.triggerFromEvent(context.Background(), issueCommentEvent("maintainer", "hello\n  @BoThOs   review  \nthanks", true))
+	if err != nil || !handled {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	if loadCalls != 1 || !trigger.Manual || trigger.BaseSHA != "loaded-base" || trigger.HeadSHA != "loaded-head" {
+		t.Fatalf("trigger = %+v loadCalls=%d", trigger, loadCalls)
+	}
+}
+
+func TestManualReviewMentionIgnoresNonCommands(t *testing.T) {
+	d := &Dispatcher{
+		authorize: func(context.Context, string, string, string) (bool, error) {
+			t.Fatal("authorization called for ignored event")
+			return false, nil
+		},
+	}
+	tests := []struct {
+		name  string
+		event *github.IssueCommentEvent
+	}{
+		{name: "fix", event: issueCommentEvent("maintainer", "@bothos fix", true)},
+		{name: "substring", event: issueCommentEvent("maintainer", "please run @bothos review now", true)},
+		{name: "ordinary issue", event: issueCommentEvent("maintainer", "@bothos review", false)},
+		{name: "bot", event: issueCommentEvent("dependabot[bot]", "@bothos review", true)},
+	}
+	tests[3].event.Sender.Type = github.String("Bot")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, handled, err := d.triggerFromEvent(context.Background(), tt.event); err != nil || handled {
+				t.Fatalf("handled=%v err=%v", handled, err)
+			}
+		})
+	}
+}
+
+func TestManualReviewAuthorizationFailureRecordsDenyWithoutJob(t *testing.T) {
+	ctx := context.Background()
+	d, _, q := newTestEnv(t)
+	d.authorize = func(context.Context, string, string, string) (bool, error) {
+		return false, context.DeadlineExceeded
+	}
+	if err := d.HandleEvent(ctx, pullRequestLabelEvent("maintainer", "bothos/review")); err != nil {
+		t.Fatal(err)
+	}
+	var decision string
+	if err := q.Pool().QueryRow(ctx, `SELECT decision FROM runs WHERE id='run-fixed'`).Scan(&decision); err != nil {
+		t.Fatal(err)
+	}
+	var jobs int
+	if err := q.Pool().QueryRow(ctx, `SELECT count(*) FROM river_job WHERE args->>'run_id'='run-fixed'`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if decision != "deny" || jobs != 0 {
+		t.Fatalf("decision=%q jobs=%d", decision, jobs)
+	}
+}
+
+func TestAutomaticPullRequestDoesNotAuthorizeActor(t *testing.T) {
+	d := &Dispatcher{authorize: func(context.Context, string, string, string) (bool, error) {
+		t.Fatal("automatic event performed actor lookup")
+		return false, nil
+	}}
+	event := pullRequestLabelEvent("anyone", "")
+	event.Action = github.String("opened")
+	trigger, handled, err := d.triggerFromEvent(context.Background(), event)
+	if err != nil || !handled || trigger.Manual {
+		t.Fatalf("trigger=%+v handled=%v err=%v", trigger, handled, err)
+	}
+}
+
+func pullRequestLabelEvent(actor, label string) *github.PullRequestEvent {
+	return &github.PullRequestEvent{
+		Action: github.String("labeled"),
+		Number: github.Int(12),
+		Label:  &github.Label{Name: github.String(label)},
+		Sender: &github.User{Login: github.String(actor)},
+		Repo: &github.Repository{
+			Owner: &github.User{Login: github.String("shambu2k")},
+			Name:  github.String("repo"),
+		},
+		PullRequest: &github.PullRequest{
+			Base: &github.PullRequestBranch{Ref: github.String("main"), SHA: github.String("base-sha")},
+			Head: &github.PullRequestBranch{Ref: github.String("feature"), SHA: github.String("head-sha")},
+		},
+	}
+}
+
+func issueCommentEvent(actor, body string, pullRequest bool) *github.IssueCommentEvent {
+	issue := &github.Issue{Number: github.Int(12)}
+	if pullRequest {
+		issue.PullRequestLinks = &github.PullRequestLinks{}
+	}
+	return &github.IssueCommentEvent{
+		Action:  github.String("created"),
+		Issue:   issue,
+		Comment: &github.IssueComment{Body: github.String(body)},
+		Sender:  &github.User{Login: github.String(actor), Type: github.String("User")},
+		Repo: &github.Repository{
+			Owner: &github.User{Login: github.String("shambu2k")},
+			Name:  github.String("repo"),
+		},
 	}
 }
 

@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
+	"github.com/google/go-github/v69/github"
 	"github.com/riverqueue/river"
 	"github.com/shambu2k/bothos/internal/dispatch"
 	"github.com/shambu2k/bothos/internal/ledger"
@@ -57,7 +59,7 @@ func TestEndToEndWebhookToWorker(t *testing.T) {
 
 	d := dispatch.New(l, q, func(ctx context.Context, owner, name string) (policy.Rules, error) {
 		return policy.Rules{Enabled: true, AllowedLabels: []string{"kind/upgrade"}, ActorAllowlist: []string{"shambu2k"}}, nil
-	})
+	}, nil, nil)
 
 	srv := httptest.NewServer(webhookHandler(e2eSecret, d))
 	defer srv.Close()
@@ -117,7 +119,7 @@ func TestWebhookRejectsBadSignature(t *testing.T) {
 	defer q.Close()
 	d := dispatch.New(l, q, func(ctx context.Context, o, n string) (policy.Rules, error) {
 		return policy.Rules{Enabled: true}, nil
-	})
+	}, nil, nil)
 	srv := httptest.NewServer(webhookHandler(e2eSecret, d))
 	defer srv.Close()
 
@@ -131,6 +133,72 @@ func TestWebhookRejectsBadSignature(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestActorAuthorizerPermissionMapping(t *testing.T) {
+	for _, tt := range []struct {
+		permission string
+		want       bool
+	}{
+		{permission: "admin", want: true},
+		{permission: "maintain", want: true},
+		{permission: "write", want: true},
+		{permission: "triage", want: false},
+		{permission: "read", want: false},
+		{permission: "unknown", want: false},
+	} {
+		t.Run(tt.permission, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/o/r/collaborators/alice/permission" {
+					t.Fatalf("path = %s", r.URL.Path)
+				}
+				_, _ = w.Write([]byte(`{"permission":"` + tt.permission + `"}`))
+			}))
+			defer server.Close()
+			client := github.NewClient(server.Client())
+			client.BaseURL, _ = url.Parse(server.URL + "/")
+
+			got, err := newActorAuthorizer(client, true)(context.Background(), "o", "r", "alice")
+			if err != nil || got != tt.want {
+				t.Fatalf("authorized=%v err=%v, want %v", got, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestActorAuthorizerMissingTokenAndAPIFailureDeny(t *testing.T) {
+	got, err := newActorAuthorizer(nil, false)(context.Background(), "o", "r", "alice")
+	if err != nil || got {
+		t.Fatalf("missing token authorized=%v err=%v", got, err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadGateway)
+	}))
+	defer server.Close()
+	client := github.NewClient(server.Client())
+	client.BaseURL, _ = url.Parse(server.URL + "/")
+	got, err = newActorAuthorizer(client, true)(context.Background(), "o", "r", "alice")
+	if err == nil || got {
+		t.Fatalf("API failure authorized=%v err=%v", got, err)
+	}
+}
+
+func TestPullRequestLoaderReturnsImmutableSHAs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/o/r/pulls/12" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"base":{"sha":"base-sha"},"head":{"sha":"head-sha"}}`))
+	}))
+	defer server.Close()
+	client := github.NewClient(server.Client())
+	client.BaseURL, _ = url.Parse(server.URL + "/")
+
+	base, head, err := newPullRequestLoader(client)(context.Background(), "o", "r", 12)
+	if err != nil || base != "base-sha" || head != "head-sha" {
+		t.Fatalf("base=%q head=%q err=%v", base, head, err)
 	}
 }
 
