@@ -42,6 +42,29 @@ func TestReviewSandboxRejectsHeadSHAMismatch(t *testing.T) {
 	}
 }
 
+func TestGitURLEmbedsReadTokenForPrivateRepos(t *testing.T) {
+	cleanup := func() {
+		_ = os.Unsetenv("GITHUB_READ_TOKEN")
+	}
+	t.Cleanup(cleanup)
+
+	// Without a token: plain public URL, no auth leak.
+	if got := gitURL("Jivanex/JIVA_BACKEND"); got != "https://github.com/Jivanex/JIVA_BACKEND.git" {
+		t.Fatalf("no-token URL = %q", got)
+	}
+	if got := gitURL("acme/widget.git"); got != "https://github.com/acme/widget.git" {
+		t.Fatalf("no-token URL (trailing .git) = %q", got)
+	}
+
+	// With a token: x-access-token embedded, matching scanjob.ShallowClone's
+	// format for private repos: https://x-access-token:<tok>@github.com/<repo>.git
+	t.Setenv("GITHUB_READ_TOKEN", "sekrit")
+	want := "https://x-access-token:sekrit@github.com/Jivanex/JIVA_BACKEND.git"
+	if got := gitURL("Jivanex/JIVA_BACKEND"); got != want {
+		t.Fatalf("token URL = %q, want %q", got, want)
+	}
+}
+
 func seedReviewOrigin(t *testing.T) (origin, baseSHA, headSHA string) {
 	t.Helper()
 	seed := t.TempDir()

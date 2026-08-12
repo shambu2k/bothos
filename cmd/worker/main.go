@@ -171,8 +171,20 @@ func newSandboxer() func(ctx context.Context, repo string) (runtime.Sandbox, err
 
 func newReviewSandboxer() runpipe.ReviewSandboxer {
 	return newReviewSandboxerWithURL(func(repo string) string {
-		return "https://github.com/" + strings.TrimSuffix(repo, ".git") + ".git"
+		return gitURL(repo)
 	})
+}
+
+// gitURL builds an https clone URL for repo (owner/name), embedding
+// GITHUB_READ_TOKEN as an x-access-token when set so private repos can be
+// reviewed without giving the worker any write credential. Mirrors
+// scanjob.ShallowClone's auth.
+func gitURL(repo string) string {
+	repo = strings.TrimSuffix(repo, ".git")
+	if tok := os.Getenv("GITHUB_READ_TOKEN"); tok != "" {
+		return "https://x-access-token:" + tok + "@github.com/" + repo + ".git"
+	}
+	return "https://github.com/" + repo + ".git"
 }
 
 func newReviewSandboxerWithURL(repoURL func(string) string) runpipe.ReviewSandboxer {
