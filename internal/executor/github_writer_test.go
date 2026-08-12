@@ -161,20 +161,16 @@ func TestWriterPostReviewCreatesAggregateComment(t *testing.T) {
 	for _, want := range []string{
 		reviewCommentMarker,
 		"## Bothos review",
-		"### [opinion] Summary",
-		"### [verified] Deterministic findings",
-		"[verified] dependency_delta: tar changed",
+		"needs &lt;!-- hidden --&gt; work",
+		"### Inline remarks",
+		"`package.json:3` — dependency_delta: tar changed",
 		"&lt;token&gt;",
-		"### [opinion] Model comments",
-		"[opinion] consider &lt;!-- marker --&gt; this",
+		"`a.go:8` — consider &lt;!-- marker --&gt; this",
 		"[opinion] Recommendation: request changes",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q:\n%s", want, body)
 		}
-	}
-	if strings.Index(body, "[verified] dependency_delta") > strings.Index(body, "[opinion] consider") {
-		t.Fatalf("opinion rendered before verified finding:\n%s", body)
 	}
 	for _, request := range *requests {
 		if strings.Contains(request.path, "/pulls/9/reviews") {
@@ -364,5 +360,87 @@ func TestWriterNeverPutsTokenInURLOrBody(t *testing.T) {
 		if b, _ := json.Marshal(r.body); strings.Contains(string(b), testToken) {
 			t.Errorf("token leaked into body: %s", b)
 		}
+	}
+}
+
+func TestPostReviewCommentsPlacesInlineAnchors(t *testing.T) {
+	writer, requests := newAdapter(t, testToken)
+	posted, err := writer.PostReviewComments(t.Context(), Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}},
+		PostReviewWrite{
+			PRNumber: 9,
+			HeadSHA:  "abcd1234",
+			Comments: []intent.ReviewComment{
+				{Path: "package.json", Line: 3, Side: "RIGHT", Body: "dependency_delta: tar changed", Verified: true, Evidence: "<tok>"},
+				{Path: "a.go", Line: 8, Body: "consider this"},      // side defaults to RIGHT
+				{Path: "", Line: 5, Body: "no path -> skipped"},     // not anchorable
+				{Path: "b.go", Line: 0, Body: "no line -> skipped"}, // not anchorable
+			},
+		})
+	if err != nil {
+		t.Fatalf("PostReviewComments: %v", err)
+	}
+	if posted != 2 {
+		t.Fatalf("posted = %d, want 2", posted)
+	}
+	var inline []recordedRequest
+	for _, r := range *requests {
+		if strings.Contains(r.path, "/pulls/9/comments") {
+			inline = append(inline, r)
+		}
+	}
+	if len(inline) != 2 {
+		t.Fatalf("inline requests = %d, want 2: %+v", len(inline), *requests)
+	}
+	// First comment: verified, anchored, evidence present, commit id set.
+	if inline[0].body["commit_id"] != "abcd1234" || inline[0].body["path"] != "package.json" ||
+		inline[0].body["line"] != float64(3) || inline[0].body["side"] != "RIGHT" {
+		t.Fatalf("inline[0] = %+v", inline[0].body)
+	}
+	b0, _ := inline[0].body["body"].(string)
+	if !strings.HasPrefix(b0, "[verified] ") || !strings.Contains(b0, "&lt;tok&gt;") {
+		t.Fatalf("inline[0] body = %q", b0)
+	}
+	// Second comment: side defaults to RIGHT, body tagged opinion.
+	if inline[1].body["side"] != "RIGHT" || inline[1].body["path"] != "a.go" || inline[1].body["line"] != float64(8) {
+		t.Fatalf("inline[1] = %+v", inline[1].body)
+	}
+	b1, _ := inline[1].body["body"].(string)
+	if !strings.HasPrefix(b1, "[opinion] ") {
+		t.Fatalf("inline[1] body = %q", b1)
+	}
+}
+
+func TestPostReviewCommentsSkipsOutOfHunkLine(t *testing.T) {
+	// A 422 (line not in current diff hunk after a push) must skip that remark
+	// instead of failing the whole review.
+	var inlinePosts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/pulls/9/comments") {
+			inlinePosts++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprintln(w, `{"message":"line must be part of the diff"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{}`)
+	}))
+	defer server.Close()
+	ghc := github.NewClient(server.Client()).WithAuthToken(testToken)
+	ghc.BaseURL, _ = url.Parse(server.URL + "/")
+	w := NewGitHubWriter(func(pat string) *github.Client { return ghc })
+
+	posted, err := w.PostReviewComments(t.Context(), Credential{Token: testToken, Repo: intent.Repo{Owner: "shambu2k", Name: "repo"}},
+		PostReviewWrite{PRNumber: 9, HeadSHA: "h", Comments: []intent.ReviewComment{
+			{Path: "x.go", Line: 1, Body: "stale anchor"},
+			{Path: "y.go", Line: 2, Body: "also stale"},
+		}})
+	if err != nil {
+		t.Fatalf("PostReviewComments: %v (a 422 must not surface)", err)
+	}
+	if posted != 0 {
+		t.Fatalf("posted = %d, want 0 (all stale)", posted)
+	}
+	if inlinePosts != 2 {
+		t.Fatalf("inline POST attempts = %d, want 2", inlinePosts)
 	}
 }

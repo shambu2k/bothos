@@ -321,7 +321,7 @@ func (unusedReviewDiff) FromWorktree(context.Context, string, string) (intent.Di
 
 func TestReviewPipelineReusesAcknowledgementAcrossTwoHeads(t *testing.T) {
 	var commentBody string
-	creates, edits := 0, 0
+	creates, edits, inline := 0, 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -333,7 +333,7 @@ func TestReviewPipelineReusesAcknowledgementAcrossTwoHeads(t *testing.T) {
 			} else {
 				fmt.Fprintf(w, `[{"id":700,"body":%q,"user":{"login":"bothos-bot"}}]`, commentBody)
 			}
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/7/comments"):
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/7/comments") && !strings.Contains(r.URL.Path, "/reviews"):
 			var payload struct {
 				Body string `json:"body"`
 			}
@@ -343,6 +343,10 @@ func TestReviewPipelineReusesAcknowledgementAcrossTwoHeads(t *testing.T) {
 			creates++
 			commentBody = payload.Body
 			fmt.Fprint(w, `{"id":700}`)
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/pulls/7/comments"):
+			// inline PR review comment: return a created comment.
+			inline++
+			fmt.Fprint(w, `{"id":701}`)
 		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/comments/700"):
 			var payload struct {
 				Body string `json:"body"`

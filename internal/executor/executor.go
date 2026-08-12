@@ -54,6 +54,7 @@ type UpdatePRWrite struct {
 type PostReviewWrite struct {
 	PRNumber  int
 	CommentID int64
+	HeadSHA   string // commit_id for inline review comments
 	Verdict   intent.Verdict
 	Summary   string
 	Comments  []intent.ReviewComment
@@ -97,6 +98,11 @@ type GitHubWriter interface {
 	UpdatePR(ctx context.Context, cred Credential, spec UpdatePRWrite) (ref string, err error)
 	PostReview(ctx context.Context, cred Credential, spec PostReviewWrite) (ref string, commentID int64, err error)
 	AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (ref string, commentID int64, err error)
+	// PostReviewComments places each review remark as a real inline PR review
+	// comment anchored at its path:line:side on the head commit. Remarks with
+	// no actionable path or line are skipped so a missing/late hunk can never
+	// fail the whole review. Returns the number posted inline.
+	PostReviewComments(ctx context.Context, cred Credential, spec PostReviewWrite) (int, error)
 	PostComment(ctx context.Context, cred Credential, spec PostCommentWrite) (ref string, err error)
 	SetLabels(ctx context.Context, cred Credential, spec SetLabelsWrite) (ref string, err error)
 	// PushBranch pushes a locally-committed work branch (in worktree) to the
@@ -211,9 +217,22 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 		})
 
 	case intent.PostReview:
+		// Hybrid: real inline remarks on the diff first (stale-line safe, best
+		// effort), then one persistent summary comment that is updated in place
+		// on later runs. A 422 on an out-of-hunk line already skips inline;
+		// an inline failure that is not a stale line still surfaces.
+		if _, err := e.gh.PostReviewComments(ctx, cred, PostReviewWrite{
+			PRNumber: g.Scope.Number,
+			HeadSHA:  g.Scope.HeadSHA,
+			Summary:  v.Summary,
+			Comments: v.Comments,
+		}); err != nil {
+			return Result{}, fmt.Errorf("post review comments: %w", err)
+		}
 		ref, writtenCommentID, err = e.gh.PostReview(ctx, cred, PostReviewWrite{
 			PRNumber:  g.Scope.Number,
 			CommentID: mappedCommentID,
+			HeadSHA:   g.Scope.HeadSHA,
 			Verdict:   v.Verdict,
 			Summary:   v.Summary,
 			Comments:  v.Comments,

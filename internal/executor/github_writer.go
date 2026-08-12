@@ -126,6 +126,67 @@ func (w *githubWriter) PostReview(ctx context.Context, cred Credential, spec Pos
 	return w.ref(cred, spec.PRNumber), comment.GetID(), nil
 }
 
+// PostReviewComments places each review remark as a real inline PR review
+// comment anchored at its path:line:side on the head commit (go-github's
+// PullRequests.CreateComment, which renders in the diff view). Remarks with no
+// path or line are skipped, and a remark that targets a line outside the
+// current diff hunk (GitHub returns 422 after a push shifts lines) is skipped
+// too — a stale anchor must never fail the whole review. The remaining
+// findings still live in the persistent summary comment.
+func (w *githubWriter) PostReviewComments(ctx context.Context, cred Credential, spec PostReviewWrite) (int, error) {
+	if spec.PRNumber == 0 || cred.Repo.Owner == "" || cred.Repo.Name == "" {
+		return 0, nil
+	}
+	client := w.newClient(cred.Token)
+	posted := 0
+	for _, c := range spec.Comments {
+		if c.Path == "" || c.Line <= 0 {
+			continue // nothing to anchor inline
+		}
+		side := c.Side
+		if side == "" {
+			side = "RIGHT"
+		}
+		cc, res, err := client.PullRequests.CreateComment(ctx, cred.Repo.Owner, cred.Repo.Name, spec.PRNumber, &github.PullRequestComment{
+			CommitID:  github.String(spec.HeadSHA),
+			Path:      github.String(c.Path),
+			Line:      github.Int(c.Line),
+			Side:      github.String(side),
+			Body:      github.String(renderInlineReviewComment(c)),
+			InReplyTo: nil,
+		})
+		if err != nil {
+			if res != nil && res.StatusCode == http.StatusUnprocessableEntity {
+				// Line not in the current diff hunk (stale after a push).
+				continue
+			}
+			return posted, err
+		}
+		_ = cc
+		posted++
+	}
+	return posted, nil
+}
+
+// renderInlineReviewComment renders one remark as an inline PR review comment.
+// The [verified]/[opinion] tag travels in the body so readers on the diff
+// still see provenance without opening the summary.
+func renderInlineReviewComment(c intent.ReviewComment) string {
+	var b strings.Builder
+	if c.Verified {
+		b.WriteString("[verified] ")
+	} else {
+		b.WriteString("[opinion] ")
+	}
+	b.WriteString(c.Body)
+	if c.Verified && c.Evidence != "" {
+		b.WriteString("\n\n<details><summary>Evidence</summary>\n\n<pre>")
+		b.WriteString(html.EscapeString(c.Evidence))
+		b.WriteString("</pre>\n</details>")
+	}
+	return b.String()
+}
+
 func (w *githubWriter) AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (string, int64, error) {
 	client := w.newClient(cred.Token)
 	commentID, err := findOwnedReviewComment(ctx, client, cred, prNumber)
@@ -175,47 +236,42 @@ func findOwnedReviewComment(ctx context.Context, client *github.Client, cred Cre
 func renderPostReview(spec PostReviewWrite) string {
 	var body strings.Builder
 	body.WriteString(reviewCommentMarker)
-	body.WriteString("\n## Bothos review\n\n### [opinion] Summary\n\n")
+	body.WriteString("\n## Bothos review\n\n")
 	body.WriteString(html.EscapeString(spec.Summary))
 	body.WriteString("\n")
 	if spec.Verdict == intent.VerdictRequestChanges {
 		body.WriteString("\n[opinion] Recommendation: request changes\n")
 	}
 
-	hasVerified := false
-	for _, comment := range spec.Comments {
-		if comment.Verified {
-			hasVerified = true
-			break
+	verified, opinions := 0, 0
+	for _, c := range spec.Comments {
+		if c.Verified {
+			verified++
+		} else {
+			opinions++
 		}
 	}
-	if hasVerified {
-		body.WriteString("\n### [verified] Deterministic findings\n")
-		for _, comment := range spec.Comments {
-			if !comment.Verified {
-				continue
-			}
-			fmt.Fprintf(&body, "\n- [verified] %s — `%s:%d`\n", html.EscapeString(comment.Body), html.EscapeString(comment.Path), comment.Line)
-			body.WriteString("  <details><summary>Evidence</summary>\n\n  <pre>")
-			body.WriteString(html.EscapeString(comment.Evidence))
-			body.WriteString("</pre>\n  </details>\n")
-		}
+	if verified+opinions == 0 {
+		body.WriteString("\nNo inline remarks.\n")
+		return body.String()
 	}
 
-	hasOpinion := false
-	for _, comment := range spec.Comments {
-		if !comment.Verified {
-			hasOpinion = true
-			break
+	body.WriteString("\n### Inline remarks (on the diff)\n")
+	for _, c := range spec.Comments {
+		tag := "opinion"
+		if c.Verified {
+			tag = "verified"
 		}
-	}
-	if hasOpinion {
-		body.WriteString("\n### [opinion] Model comments\n")
-		for _, comment := range spec.Comments {
-			if comment.Verified {
-				continue
-			}
-			fmt.Fprintf(&body, "\n- [opinion] %s — `%s:%d`\n", html.EscapeString(comment.Body), html.EscapeString(comment.Path), comment.Line)
+		if c.Path == "" || c.Line <= 0 {
+			// No anchorable line: keep it here rather than dropping it.
+			fmt.Fprintf(&body, "\n- [%s] %s\n", tag, html.EscapeString(c.Body))
+			continue
+		}
+		fmt.Fprintf(&body, "\n- [%s] `%s:%d` — %s\n", tag, html.EscapeString(c.Path), c.Line, html.EscapeString(c.Body))
+		if c.Verified && c.Evidence != "" {
+			body.WriteString("  <details><summary>Evidence</summary>\n\n  <pre>")
+			body.WriteString(html.EscapeString(c.Evidence))
+			body.WriteString("</pre>\n  </details>\n")
 		}
 	}
 	return body.String()

@@ -95,6 +95,9 @@ func (w *recWriter) UpdatePR(ctx context.Context, c executor.Credential, s execu
 func (w *recWriter) PostReview(ctx context.Context, c executor.Credential, s executor.PostReviewWrite) (string, int64, error) {
 	return "", 1, nil
 }
+func (w *recWriter) PostReviewComments(ctx context.Context, c executor.Credential, s executor.PostReviewWrite) (int, error) {
+	return len(s.Comments), nil
+}
 func (w *recWriter) AcknowledgeReview(ctx context.Context, c executor.Credential, prNumber int) (string, int64, error) {
 	return "", 1, nil
 }

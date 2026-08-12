@@ -92,16 +92,18 @@ func (f *fakeLedger) UpsertReviewComment(_ context.Context, _ string, _ int, com
 }
 
 type fakeWriter struct {
-	openPR    func(ctx context.Context, cred Credential, spec OpenPRWrite) (string, error)
-	updatePR  func(ctx context.Context, cred Credential, spec UpdatePRWrite) (string, error)
-	postRev   func(ctx context.Context, cred Credential, spec PostReviewWrite) (string, int64, error)
-	postCmnt  func(ctx context.Context, cred Credential, spec PostCommentWrite) (string, error)
-	setLabels func(ctx context.Context, cred Credential, spec SetLabelsWrite) (string, error)
-	ackReview func(ctx context.Context, cred Credential, prNumber int) (string, int64, error)
-	push      func(ctx context.Context, cred Credential, branch, worktree string) error
+	openPR     func(ctx context.Context, cred Credential, spec OpenPRWrite) (string, error)
+	updatePR   func(ctx context.Context, cred Credential, spec UpdatePRWrite) (string, error)
+	postRev    func(ctx context.Context, cred Credential, spec PostReviewWrite) (string, int64, error)
+	postInline func(ctx context.Context, cred Credential, spec PostReviewWrite) (int, error)
+	postCmnt   func(ctx context.Context, cred Credential, spec PostCommentWrite) (string, error)
+	setLabels  func(ctx context.Context, cred Credential, spec SetLabelsWrite) (string, error)
+	ackReview  func(ctx context.Context, cred Credential, prNumber int) (string, int64, error)
+	push       func(ctx context.Context, cred Credential, branch, worktree string) error
 
-	lastOpenPR *OpenPRWrite
-	callCount  int
+	lastOpenPR   *OpenPRWrite
+	inlinePosted []PostReviewWrite
+	callCount    int
 }
 
 func (f *fakeWriter) PushBranch(ctx context.Context, c Credential, branch, worktree string) error {
@@ -133,6 +135,14 @@ func (f *fakeWriter) PostReview(ctx context.Context, c Credential, s PostReviewW
 		return "shambu2k/repo#9", 9, nil
 	}
 	return f.postRev(ctx, c, s)
+}
+func (f *fakeWriter) PostReviewComments(ctx context.Context, c Credential, s PostReviewWrite) (int, error) {
+	f.callCount++
+	f.inlinePosted = append(f.inlinePosted, s)
+	if f.postInline == nil {
+		return len(s.Comments), nil
+	}
+	return f.postInline(ctx, c, s)
 }
 func (f *fakeWriter) AcknowledgeReview(ctx context.Context, c Credential, prNumber int) (string, int64, error) {
 	f.callCount++
@@ -437,21 +447,32 @@ func TestExecutePostReviewUsesScopeNumberAndCommentCredential(t *testing.T) {
 	})
 	store := &fakeStore{}
 	ledger := &fakeLedger{reviewID: 77, hasReviewID: true}
-	w := &fakeWriter{postRev: func(_ context.Context, cred Credential, spec PostReviewWrite) (string, int64, error) {
-		if cred.Scope != intent.TokenIssuesWrite {
-			t.Fatalf("writer credential scope = %q", cred.Scope)
-		}
-		if spec.PRNumber != 42 || spec.CommentID != 77 {
-			t.Fatalf("review spec = %+v", spec)
-		}
-		return "owner/repo#42", 88, nil
-	}}
+	w := &fakeWriter{
+		postRev: func(_ context.Context, cred Credential, spec PostReviewWrite) (string, int64, error) {
+			if cred.Scope != intent.TokenIssuesWrite {
+				t.Fatalf("writer credential scope = %q", cred.Scope)
+			}
+			if spec.PRNumber != 42 || spec.CommentID != 77 {
+				t.Fatalf("review spec = %+v", spec)
+			}
+			return "owner/repo#42", 88, nil
+		},
+		postInline: func(_ context.Context, cred Credential, spec PostReviewWrite) (int, error) {
+			if cred.Scope != intent.TokenIssuesWrite {
+				t.Fatalf("inline credential scope = %q", cred.Scope)
+			}
+			if spec.HeadSHA != "x" || spec.PRNumber != 42 {
+				t.Fatalf("inline spec = %+v (want head x, PR 42)", spec)
+			}
+			return 0, nil
+		},
+	}
 	ex := newExecutor(store, ledger, w, &fakeDiff{}, testNow)
 	if _, err := ex.Execute(context.Background(), env, g, ""); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if w.callCount != 1 {
-		t.Fatalf("writer call count = %d, want 1", w.callCount)
+	if w.callCount != 2 {
+		t.Fatalf("writer call count = %d, want 2 (inline + summary)", w.callCount)
 	}
 	if len(store.calls) != 1 || store.calls[0].scope != intent.TokenIssuesWrite {
 		t.Fatalf("store calls = %+v, want comment credential", store.calls)
