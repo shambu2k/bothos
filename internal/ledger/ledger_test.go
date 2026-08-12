@@ -24,7 +24,7 @@ func newTestStore(t *testing.T) *Postgres {
 		st.Close()
 		t.Fatalf("migrate: %v", err)
 	}
-	testdb.Truncate(t, dsn, "intents", "runs", "findings", "capability_gaps", "repo_config")
+	testdb.Truncate(t, dsn, "intents", "runs", "findings", "capability_gaps", "repo_config", "review_comments")
 	t.Cleanup(st.Close)
 	return st
 }
@@ -361,5 +361,30 @@ func TestRulesForRepoIsDeploymentOwnedAndDefaultOff(t *testing.T) {
 	}
 	if missing.Enabled || missing.AutoReview {
 		t.Fatalf("missing repository defaulted on: %+v", missing)
+	}
+}
+
+func TestReviewCommentMappingUpsertsOneRowPerPullRequest(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if _, ok, err := store.ReviewCommentID(ctx, "acme/widget", 7); err != nil || ok {
+		t.Fatalf("initial mapping ok=%v err=%v", ok, err)
+	}
+	if err := store.UpsertReviewComment(ctx, "acme/widget", 7, 101); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertReviewComment(ctx, "acme/widget", 7, 202); err != nil {
+		t.Fatal(err)
+	}
+	id, ok, err := store.ReviewCommentID(ctx, "acme/widget", 7)
+	if err != nil || !ok || id != 202 {
+		t.Fatalf("mapping id=%d ok=%v err=%v", id, ok, err)
+	}
+	var count int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM review_comments WHERE repo_id='acme/widget' AND pr_number=7`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("mapping rows = %d", count)
 	}
 }

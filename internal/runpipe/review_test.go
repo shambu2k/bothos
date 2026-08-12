@@ -3,6 +3,10 @@ package runpipe
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-github/v69/github"
 	"github.com/shambu2k/bothos/internal/executor"
 	"github.com/shambu2k/bothos/internal/intent"
 	"github.com/shambu2k/bothos/internal/ledger"
+	"github.com/shambu2k/bothos/internal/review"
 	"github.com/shambu2k/bothos/internal/runtime"
 )
 
@@ -277,4 +283,131 @@ func mustReviewJSON(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+type persistentReviewLedger struct {
+	intents  map[string]string
+	comment  int64
+	hasEntry bool
+}
+
+func (l *persistentReviewLedger) Lookup(_ context.Context, key string) (string, bool, error) {
+	ref, ok := l.intents[key]
+	return ref, ok, nil
+}
+func (l *persistentReviewLedger) Record(_ context.Context, key, _ string, ref string) error {
+	l.intents[key] = ref
+	return nil
+}
+func (l *persistentReviewLedger) ReviewCommentID(context.Context, string, int) (int64, bool, error) {
+	return l.comment, l.hasEntry, nil
+}
+func (l *persistentReviewLedger) UpsertReviewComment(_ context.Context, _ string, _ int, id int64) error {
+	l.comment, l.hasEntry = id, true
+	return nil
+}
+
+type reviewCredentialStore struct{}
+
+func (reviewCredentialStore) Resolve(context.Context, string, intent.TokenScope) (string, error) {
+	return "comment-token", nil
+}
+
+type unusedReviewDiff struct{}
+
+func (unusedReviewDiff) FromWorktree(context.Context, string, string) (intent.Diff, error) {
+	return intent.Diff{}, nil
+}
+
+func TestReviewPipelineReusesAcknowledgementAcrossTwoHeads(t *testing.T) {
+	var commentBody string
+	creates, edits := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/user":
+			fmt.Fprint(w, `{"login":"bothos-bot"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/7/comments"):
+			if commentBody == "" {
+				fmt.Fprint(w, `[]`)
+			} else {
+				fmt.Fprintf(w, `[{"id":700,"body":%q,"user":{"login":"bothos-bot"}}]`, commentBody)
+			}
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/7/comments"):
+			var payload struct {
+				Body string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			creates++
+			commentBody = payload.Body
+			fmt.Fprint(w, `{"id":700}`)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/comments/700"):
+			var payload struct {
+				Body string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			edits++
+			commentBody = payload.Body
+			fmt.Fprint(w, `{"id":700}`)
+		default:
+			t.Fatalf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	baseURL, _ := url.Parse(server.URL + "/")
+	writer := executor.NewGitHubWriter(func(string) *github.Client {
+		client := github.NewClient(server.Client())
+		client.BaseURL = baseURL
+		return client
+	})
+	execLedger := &persistentReviewLedger{intents: map[string]string{}}
+	exec := executor.NewExecutor(reviewCredentialStore{}, execLedger, writer, unusedReviewDiff{}, time.Now)
+
+	dir, baseSHA, firstHead := newReviewPipelineRepo(t)
+	firstGrant := reviewGrant(t, "persistent-1", baseSHA, firstHead)
+	firstGrant.Manual = true
+	store := &reviewStore{run: ledger.Run{ID: firstGrant.RunID, Trigger: "webhook_pull_request", Grant: mustReviewJSON(t, firstGrant)}}
+	agent := reviewAgentFunc(func(_ context.Context, input runtime.RunInput) (runtime.RunResult, error) {
+		model := validModelReview()
+		model.Summary = input.RunID
+		return runtime.RunResult{Intents: []intent.Envelope{reviewEnvelope(t, input.RunID, model)}}, nil
+	})
+	pipeline := &ReviewPipeline{
+		Store:       store,
+		Agent:       agent,
+		Exec:        exec,
+		Acknowledge: exec.AcknowledgeReview,
+		Sandbox: func(context.Context, string, int, string, string) (runtime.Sandbox, error) {
+			return reviewDirSandbox{dir: dir}, nil
+		},
+		Checks: func(context.Context, string) ([]review.Finding, error) { return nil, nil },
+	}
+	if _, err := pipeline.Run(context.Background(), firstGrant.RunID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("second head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewGit(t, dir, "commit", "-qam", "second head")
+	secondHead := reviewGit(t, dir, "rev-parse", "HEAD")
+	secondGrant := firstGrant
+	secondGrant.RunID = "persistent-2"
+	secondGrant.Manual = false
+	secondGrant.Scope.HeadSHA = secondHead
+	store.run = ledger.Run{ID: secondGrant.RunID, Trigger: "webhook_pull_request", Grant: mustReviewJSON(t, secondGrant)}
+	if _, err := pipeline.Run(context.Background(), secondGrant.RunID); err != nil {
+		t.Fatal(err)
+	}
+
+	if creates != 1 || edits != 2 || execLedger.comment != 700 {
+		t.Fatalf("creates=%d edits=%d mapping=%d", creates, edits, execLedger.comment)
+	}
+	if !strings.Contains(commentBody, "persistent-2") || strings.Contains(commentBody, "Review queued") {
+		t.Fatalf("final comment body = %q", commentBody)
+	}
 }

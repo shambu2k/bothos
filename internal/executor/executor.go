@@ -52,10 +52,11 @@ type UpdatePRWrite struct {
 }
 
 type PostReviewWrite struct {
-	PRNumber int
-	Verdict  intent.Verdict
-	Summary  string
-	Comments []intent.ReviewComment
+	PRNumber  int
+	CommentID int64
+	Verdict   intent.Verdict
+	Summary   string
+	Comments  []intent.ReviewComment
 }
 
 type PostCommentWrite struct {
@@ -80,6 +81,8 @@ type CredentialStore interface {
 type Ledger interface {
 	Lookup(ctx context.Context, idemKey string) (githubRef string, ok bool, err error)
 	Record(ctx context.Context, idemKey, runID, githubRef string) error
+	ReviewCommentID(ctx context.Context, repoID string, prNumber int) (commentID int64, ok bool, err error)
+	UpsertReviewComment(ctx context.Context, repoID string, prNumber int, commentID int64) error
 }
 
 // DiffSource computes the diff the sandbox worktree holds against its base.
@@ -92,8 +95,8 @@ type DiffSource interface {
 type GitHubWriter interface {
 	OpenPR(ctx context.Context, cred Credential, spec OpenPRWrite) (ref string, err error)
 	UpdatePR(ctx context.Context, cred Credential, spec UpdatePRWrite) (ref string, err error)
-	PostReview(ctx context.Context, cred Credential, spec PostReviewWrite) (ref string, err error)
-	AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (ref string, err error)
+	PostReview(ctx context.Context, cred Credential, spec PostReviewWrite) (ref string, commentID int64, err error)
+	AcknowledgeReview(ctx context.Context, cred Credential, prNumber int) (ref string, commentID int64, err error)
 	PostComment(ctx context.Context, cred Credential, spec PostCommentWrite) (ref string, err error)
 	SetLabels(ctx context.Context, cred Credential, spec SetLabelsWrite) (ref string, err error)
 	// PushBranch pushes a locally-committed work branch (in worktree) to the
@@ -140,6 +143,18 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 	} else if ok {
 		return Result{Kind: env.Kind, GitHubRef: ref, Deduped: true}, nil
 	}
+	repoID := g.Repo.Owner + "/" + g.Repo.Name
+	var mappedCommentID int64
+	if env.Kind == intent.KindPostReview {
+		var ok bool
+		mappedCommentID, ok, err = e.ledger.ReviewCommentID(ctx, repoID, g.Scope.Number)
+		if err != nil {
+			return Result{}, fmt.Errorf("review comment lookup: %w", err)
+		}
+		if !ok {
+			mappedCommentID = 0
+		}
+	}
 
 	tokenScope := g.TokenScope
 	if env.Kind == intent.KindPostReview {
@@ -153,6 +168,7 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 	cred := Credential{AccountID: g.Repo.AccountID, Scope: tokenScope, Token: pat, Repo: g.Repo}
 
 	var ref string
+	var writtenCommentID int64
 	switch v := p.(type) {
 	case intent.OpenPR:
 		if err := e.checkWorktreeDiff(ctx, g, worktree); err != nil {
@@ -195,13 +211,13 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 		})
 
 	case intent.PostReview:
-		ref, err = e.gh.PostReview(ctx, cred, PostReviewWrite{
-			PRNumber: g.Scope.Number,
-			Verdict:  v.Verdict,
-			Summary:  v.Summary,
-			Comments: v.Comments,
+		ref, writtenCommentID, err = e.gh.PostReview(ctx, cred, PostReviewWrite{
+			PRNumber:  g.Scope.Number,
+			CommentID: mappedCommentID,
+			Verdict:   v.Verdict,
+			Summary:   v.Summary,
+			Comments:  v.Comments,
 		})
-
 	case intent.PostComment:
 		ref, err = e.gh.PostComment(ctx, cred, PostCommentWrite{
 			Number: g.Scope.Number,
@@ -220,6 +236,15 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 	}
 	if err != nil {
 		return Result{}, err
+	}
+
+	if env.Kind == intent.KindPostReview {
+		if writtenCommentID == 0 {
+			return Result{}, fmt.Errorf("post review returned empty comment ID")
+		}
+		if err := e.ledger.UpsertReviewComment(ctx, repoID, g.Scope.Number, writtenCommentID); err != nil {
+			return Result{}, fmt.Errorf("review comment record: %w", err)
+		}
 	}
 
 	if err := e.ledger.Record(ctx, key, g.RunID, ref); err != nil {
@@ -245,8 +270,16 @@ func (e *Executor) AcknowledgeReview(ctx context.Context, grant intent.Grant) er
 		Token:     pat,
 		Repo:      grant.Repo,
 	}
-	if _, err := e.gh.AcknowledgeReview(ctx, credential, grant.Scope.Number); err != nil {
+	_, commentID, err := e.gh.AcknowledgeReview(ctx, credential, grant.Scope.Number)
+	if err != nil {
 		return fmt.Errorf("acknowledge review: %w", err)
+	}
+	if commentID == 0 {
+		return fmt.Errorf("acknowledge review returned empty comment ID")
+	}
+	repoID := grant.Repo.Owner + "/" + grant.Repo.Name
+	if err := e.ledger.UpsertReviewComment(ctx, repoID, grant.Scope.Number, commentID); err != nil {
+		return fmt.Errorf("review comment record: %w", err)
 	}
 	return nil
 }

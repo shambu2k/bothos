@@ -56,10 +56,13 @@ func (f *fakeStore) Resolve(ctx context.Context, accountID string, scope intent.
 }
 
 type fakeLedger struct {
-	lookup func(ctx context.Context, key string) (string, bool, error)
-	record func(ctx context.Context, key, runID, ref string) error
-	gotKey string
-	gotRef string
+	lookup        func(ctx context.Context, key string) (string, bool, error)
+	record        func(ctx context.Context, key, runID, ref string) error
+	reviewID      int64
+	hasReviewID   bool
+	reviewUpserts int
+	gotKey        string
+	gotRef        string
 }
 
 func (f *fakeLedger) Lookup(ctx context.Context, key string) (string, bool, error) {
@@ -77,13 +80,24 @@ func (f *fakeLedger) Record(ctx context.Context, key, runID, ref string) error {
 	return f.record(ctx, key, runID, ref)
 }
 
+func (f *fakeLedger) ReviewCommentID(context.Context, string, int) (int64, bool, error) {
+	return f.reviewID, f.hasReviewID, nil
+}
+
+func (f *fakeLedger) UpsertReviewComment(_ context.Context, _ string, _ int, commentID int64) error {
+	f.reviewID = commentID
+	f.hasReviewID = true
+	f.reviewUpserts++
+	return nil
+}
+
 type fakeWriter struct {
 	openPR    func(ctx context.Context, cred Credential, spec OpenPRWrite) (string, error)
 	updatePR  func(ctx context.Context, cred Credential, spec UpdatePRWrite) (string, error)
-	postRev   func(ctx context.Context, cred Credential, spec PostReviewWrite) (string, error)
+	postRev   func(ctx context.Context, cred Credential, spec PostReviewWrite) (string, int64, error)
 	postCmnt  func(ctx context.Context, cred Credential, spec PostCommentWrite) (string, error)
 	setLabels func(ctx context.Context, cred Credential, spec SetLabelsWrite) (string, error)
-	ackReview func(ctx context.Context, cred Credential, prNumber int) (string, error)
+	ackReview func(ctx context.Context, cred Credential, prNumber int) (string, int64, error)
 	push      func(ctx context.Context, cred Credential, branch, worktree string) error
 
 	lastOpenPR *OpenPRWrite
@@ -113,17 +127,17 @@ func (f *fakeWriter) UpdatePR(ctx context.Context, c Credential, s UpdatePRWrite
 	}
 	return f.updatePR(ctx, c, s)
 }
-func (f *fakeWriter) PostReview(ctx context.Context, c Credential, s PostReviewWrite) (string, error) {
+func (f *fakeWriter) PostReview(ctx context.Context, c Credential, s PostReviewWrite) (string, int64, error) {
 	f.callCount++
 	if f.postRev == nil {
-		return "shambu2k/repo#9", nil
+		return "shambu2k/repo#9", 9, nil
 	}
 	return f.postRev(ctx, c, s)
 }
-func (f *fakeWriter) AcknowledgeReview(ctx context.Context, c Credential, prNumber int) (string, error) {
+func (f *fakeWriter) AcknowledgeReview(ctx context.Context, c Credential, prNumber int) (string, int64, error) {
 	f.callCount++
 	if f.ackReview == nil {
-		return "shambu2k/repo#9", nil
+		return "shambu2k/repo#9", 9, nil
 	}
 	return f.ackReview(ctx, c, prNumber)
 }
@@ -422,16 +436,17 @@ func TestExecutePostReviewUsesScopeNumberAndCommentCredential(t *testing.T) {
 		"verdict": "comment", "summary": "looks fine", "comments": []any{},
 	})
 	store := &fakeStore{}
-	w := &fakeWriter{postRev: func(_ context.Context, cred Credential, spec PostReviewWrite) (string, error) {
+	ledger := &fakeLedger{reviewID: 77, hasReviewID: true}
+	w := &fakeWriter{postRev: func(_ context.Context, cred Credential, spec PostReviewWrite) (string, int64, error) {
 		if cred.Scope != intent.TokenIssuesWrite {
 			t.Fatalf("writer credential scope = %q", cred.Scope)
 		}
-		if spec.PRNumber != 42 {
-			t.Fatalf("PR number = %d", spec.PRNumber)
+		if spec.PRNumber != 42 || spec.CommentID != 77 {
+			t.Fatalf("review spec = %+v", spec)
 		}
-		return "owner/repo#42", nil
+		return "owner/repo#42", 88, nil
 	}}
-	ex := newExecutor(store, &fakeLedger{}, w, &fakeDiff{}, testNow)
+	ex := newExecutor(store, ledger, w, &fakeDiff{}, testNow)
 	if _, err := ex.Execute(context.Background(), env, g, ""); err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -440,6 +455,56 @@ func TestExecutePostReviewUsesScopeNumberAndCommentCredential(t *testing.T) {
 	}
 	if len(store.calls) != 1 || store.calls[0].scope != intent.TokenIssuesWrite {
 		t.Fatalf("store calls = %+v, want comment credential", store.calls)
+	}
+	if ledger.reviewID != 88 || ledger.reviewUpserts != 1 {
+		t.Fatalf("review mapping id=%d upserts=%d", ledger.reviewID, ledger.reviewUpserts)
+	}
+}
+
+func TestExecutePostReviewDedupesRunAndEditsAcrossRuns(t *testing.T) {
+	refs := map[string]string{}
+	ledger := &fakeLedger{}
+	ledger.lookup = func(_ context.Context, key string) (string, bool, error) {
+		ref, ok := refs[key]
+		return ref, ok, nil
+	}
+	ledger.record = func(_ context.Context, key, _ string, ref string) error {
+		refs[key] = ref
+		return nil
+	}
+	var commentIDs []int64
+	writer := &fakeWriter{postRev: func(_ context.Context, _ Credential, spec PostReviewWrite) (string, int64, error) {
+		commentIDs = append(commentIDs, spec.CommentID)
+		if spec.CommentID == 0 {
+			return "shambu2k/repo#42", 500, nil
+		}
+		return "shambu2k/repo#42", spec.CommentID, nil
+	}}
+	executor := newExecutor(&fakeStore{}, ledger, writer, &fakeDiff{}, testNow)
+
+	firstGrant := testGrant(func(g *intent.Grant) {
+		g.AllowedKinds = []intent.Kind{intent.KindPostReview}
+		g.TokenScope = intent.TokenReadOnly
+		g.Scope = intent.Scope{Kind: intent.ScopePullRequest, Number: 42, HeadSHA: "head-1"}
+	})
+	first := mustEnv(t, firstGrant, intent.KindPostReview, map[string]any{"verdict": "comment", "summary": "first", "comments": []any{}})
+	if _, err := executor.Execute(context.Background(), first, firstGrant, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Execute(context.Background(), first, firstGrant, "")
+	if err != nil || !result.Deduped {
+		t.Fatalf("same-run retry = %+v err=%v", result, err)
+	}
+
+	secondGrant := firstGrant
+	secondGrant.RunID = "run-2"
+	secondGrant.Scope.HeadSHA = "head-2"
+	second := mustEnv(t, secondGrant, intent.KindPostReview, map[string]any{"verdict": "comment", "summary": "second", "comments": []any{}})
+	if _, err := executor.Execute(context.Background(), second, secondGrant, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(commentIDs) != 2 || commentIDs[0] != 0 || commentIDs[1] != 500 {
+		t.Fatalf("comment IDs = %v", commentIDs)
 	}
 }
 
@@ -465,18 +530,22 @@ func TestAcknowledgeReviewUsesCommentCredential(t *testing.T) {
 		g.Scope = intent.Scope{Kind: intent.ScopePullRequest, Number: 42}
 	})
 	store := &fakeStore{}
-	writer := &fakeWriter{ackReview: func(_ context.Context, cred Credential, number int) (string, error) {
+	ledger := &fakeLedger{}
+	writer := &fakeWriter{ackReview: func(_ context.Context, cred Credential, number int) (string, int64, error) {
 		if cred.Scope != intent.TokenIssuesWrite || number != 42 {
 			t.Fatalf("ack credential=%q number=%d", cred.Scope, number)
 		}
-		return "owner/repo#42", nil
+		return "owner/repo#42", 99, nil
 	}}
-	ex := newExecutor(store, &fakeLedger{}, writer, &fakeDiff{}, testNow)
+	ex := newExecutor(store, ledger, writer, &fakeDiff{}, testNow)
 	if err := ex.AcknowledgeReview(context.Background(), grant); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.calls) != 1 || store.calls[0].scope != intent.TokenIssuesWrite || writer.callCount != 1 {
 		t.Fatalf("store=%+v writer calls=%d", store.calls, writer.callCount)
+	}
+	if ledger.reviewID != 99 || ledger.reviewUpserts != 1 {
+		t.Fatalf("ack mapping id=%d upserts=%d", ledger.reviewID, ledger.reviewUpserts)
 	}
 }
 

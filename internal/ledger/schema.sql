@@ -141,3 +141,11 @@ CREATE TABLE IF NOT EXISTS repo_config (
 
 ALTER TABLE repo_config
     ADD COLUMN IF NOT EXISTS auto_review BOOLEAN NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS review_comments (
+    repo_id    TEXT NOT NULL,
+    pr_number  INTEGER NOT NULL,
+    comment_id BIGINT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (repo_id, pr_number)
+);
