@@ -77,6 +77,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	worktree := in.Sandbox.Worktree()
 	var initialPrompt string
 	reviewMode := false
+	issueMode := false
 	verifyMode := false
 	switch task := in.Task.(type) {
 	case runtime.SecurityTask:
@@ -84,6 +85,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		verifyMode = true
 	case runtime.IssueTask:
 		initialPrompt = runtime.IssuePrompt(in.RunID, task) + reportingInstructions
+		issueMode = true
 	case runtime.ReviewTask:
 		initialPrompt = runtime.ReviewPrompt(task) + reviewReportingInstructions
 		reviewMode = true
@@ -313,6 +315,12 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	// origin/HEAD). Dirty-tree (uncommitted) checks belong to the verifier, not
 	// here.
 	if !hasCommits(worktree) {
+		if issueMode && v == nil {
+			return runtime.RunResult{Verdict: &runtime.Verdict{
+				Status:  runtime.VerdictBlocked,
+				Summary: "The agent did not produce a committed change or a usable blocked report. Please provide one concrete implementation decision, then trigger a new labeled run.",
+			}}, nil
+		}
 		return runtime.RunResult{}, fmt.Errorf("agent produced no commits on its branch")
 	}
 

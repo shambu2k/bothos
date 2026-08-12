@@ -442,6 +442,26 @@ func TestRPCRejectedPromptIsError(t *testing.T) {
 	}
 }
 
+func TestRPCIssueWithoutVerdictOrCommitStandsDown(t *testing.T) {
+	repo := newRepo(t)
+	r, _ := newRPC(t, nil)
+
+	result, err := r.Run(context.Background(), runtime.RunInput{
+		RunID:   "issue-no-output",
+		Task:    runtime.IssueTask{IssueNumber: 42, RepoURL: "https://github.com/acme/widget.git", BaseRef: "main"},
+		Sandbox: dirSandbox{dir: repo}, Limits: runtime.Limits{MaxSeconds: time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("issue stand-down: %v", err)
+	}
+	if result.Verdict == nil || result.Verdict.Status != runtime.VerdictBlocked || len(result.Intents) != 0 {
+		t.Fatalf("result = %+v, want blocked verdict without intents", result)
+	}
+	if !strings.Contains(result.Verdict.Summary, "did not produce a committed change") {
+		t.Fatalf("fallback summary = %q", result.Verdict.Summary)
+	}
+}
+
 func TestRPCIssueProducesDraftIntentWithoutDependencyVerifier(t *testing.T) {
 	repo := newRepo(t)
 	r, logf := newRPC(t, map[string]string{
