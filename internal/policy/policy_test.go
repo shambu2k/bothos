@@ -112,6 +112,17 @@ func TestManualPullRequestRequiresWritePermission(t *testing.T) {
 	}
 }
 
+func TestReviewLabelWithoutManualIsDenied(t *testing.T) {
+	trigger := Trigger{
+		Kind: TriggerPullRequest, Owner: "o", Name: "n", Number: 9,
+		BaseSHA: "base", HeadSHA: "head", Actor: "shambu2k", ActorHasWrite: true,
+		Manual: false, ReviewLabel: true,
+	}
+	if _, err := Decide(trigger, baseRules(), "run-label-nonmanual-denied", now); !errors.Is(err, ErrPolicyDenied) {
+		t.Fatalf("review label without manual flag = %v, want denied", err)
+	}
+}
+
 func TestManualReviewLabelRequiresConfiguredActor(t *testing.T) {
 	trigger := Trigger{
 		Kind: TriggerPullRequest, Owner: "o", Name: "n", Number: 9,

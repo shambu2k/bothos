@@ -102,6 +102,9 @@ func Decide(t Trigger, r Rules, runID string, now time.Time) (intent.Grant, erro
 		base.TokenScope = intent.TokenContentsWrite
 
 	case TriggerPullRequest:
+		if t.ReviewLabel && !t.Manual {
+			return intent.Grant{}, fmt.Errorf("%w: review-label trigger without manual flag", ErrPolicyDenied)
+		}
 		if t.Manual && !t.ActorHasWrite {
 			return intent.Grant{}, fmt.Errorf("%w: manual review actor %q lacks write permission", ErrPolicyDenied, t.Actor)
 		}
