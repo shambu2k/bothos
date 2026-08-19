@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +44,10 @@ type RPC struct {
 	// Inject both in tests to script verifier trajectories.
 	Verify    func(ctx context.Context, worktree string, fixes []runtime.ClaimedFix) (verifier.Result, error)
 	MaxRounds int
+
+	// Logger, when non-nil, receives structured run logs (each with a
+	// run_id attribute); nil falls back to slog.Default().
+	Logger *slog.Logger
 }
 
 // NewPIRPC returns an RPC configured from zero or a partially-filled model.
@@ -56,6 +60,15 @@ func NewPIRPC(piBin, model, sessionDir string, approve bool) *RPC {
 		model = defaultModel
 	}
 	return &RPC{piBin: piBin, model: model, sessionDir: sessionDir, approve: approve, WaitDelay: 15 * time.Second}
+}
+
+// runLogger returns a logger carrying runID as a structured run_id field,
+// falling back to slog.Default() when no logger was injected.
+func (r *RPC) runLogger(runID string) *slog.Logger {
+	if r.Logger != nil {
+		return r.Logger.With("run_id", runID)
+	}
+	return slog.Default().With("run_id", runID)
 }
 
 // rpcEvent is the subset of PI RPC stdout events we consume. Unknown fields are
@@ -261,7 +274,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 				"type":    "prompt",
 				"message": msg,
 			}); err != nil {
-				log.Printf("run %s: feedback encode: %v", in.RunID, err)
+				r.runLogger(in.RunID).Error("feedback encode failed", "err", err)
 				break
 			}
 			_ = r.awaitSettled(in.RunID, sc)
@@ -289,8 +302,8 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	if err := cmd.Wait(); err != nil {
 		// Distinguish our cancellation from an external kill (research: Go's
 		// "signal: killed" is ambiguous; log the context cause + elapsed time).
-		log.Printf("run %s: pi rpc exited: %v (ctx=%v elapsed=%s stderr=%s)",
-			in.RunID, err, ctx.Err(), time.Since(start).Round(time.Millisecond), errBuf.String())
+		r.runLogger(in.RunID).Error("pi rpc exited",
+			"err", err, "ctx_err", ctx.Err(), "elapsed", time.Since(start).Round(time.Millisecond), "stderr", errBuf.String())
 		return runtime.RunResult{}, fmt.Errorf("pi rpc: %w (ctx=%v)", err, ctx.Err())
 	}
 	if settleErr != nil {
@@ -482,7 +495,7 @@ func (r *RPC) awaitSettled(runID string, sc *bufio.Scanner) error {
 		}
 		switch ev.Type {
 		case "tool_execution_start":
-			log.Printf("run %s: RPC tool %q", runID, ev.ToolName)
+			r.runLogger(runID).Info("rpc tool execution", "tool", ev.ToolName)
 		case "response":
 			if ev.Command == "prompt" && ev.Success != nil && !*ev.Success {
 				return fmt.Errorf("pi rpc: prompt rejected")

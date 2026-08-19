@@ -9,7 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/shambu2k/bothos/internal/executor"
@@ -51,6 +51,9 @@ type Pipeline struct {
 	// Now returns the current time. It defaults to time.Now but may be
 	// injected in tests to make grant-expiry checks deterministic.
 	Now func() time.Time
+	// Log, when non-nil, receives structured run logs (each with a run_id
+	// attribute); nil falls back to slog.Default().
+	Log *slog.Logger
 }
 
 // now is the injected-clock seam: nil falls back to the wall clock so
@@ -60,6 +63,15 @@ func (p *Pipeline) now() time.Time {
 		return p.Now()
 	}
 	return time.Now()
+}
+
+// runLog returns a logger carrying runID as a structured run_id field,
+// falling back to slog.Default() when no logger was injected.
+func (p *Pipeline) runLog(runID string) *slog.Logger {
+	if p.Log != nil {
+		return p.Log.With("run_id", runID)
+	}
+	return slog.Default().With("run_id", runID)
 }
 
 // Run executes the security orchestration and returns the GitHub ref (e.g.
@@ -118,7 +130,7 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	if res.Verdict != nil {
 		verdictStatus = res.Verdict.Status
 	}
-	log.Printf("run %s: agent verdict %q", runID, verdictStatus)
+	p.runLog(runID).Info("agent verdict", "verdict", verdictStatus)
 	var openPR *intent.Envelope
 	for i := range res.Intents {
 		if res.Intents[i].Kind == intent.KindOpenPR {
@@ -135,7 +147,7 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 			if err := p.Store.SetRunFailure(ctx, runID, "agent blocked: "+res.Verdict.Summary); err != nil {
 				return "", fmt.Errorf("record failure: %w", err)
 			}
-			log.Printf("run %s: agent stood down (blocked)", runID)
+			p.runLog(runID).Info("agent stood down", "reason", "blocked")
 			return "", nil
 		}
 		return fail(fmt.Errorf("no open_pr intent produced"))

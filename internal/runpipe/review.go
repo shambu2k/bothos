@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"sort"
@@ -31,6 +31,9 @@ type ReviewPipeline struct {
 	// Now returns the current time (nil clock defaults to the wall clock;
 	// tests inject it for deterministic grant-expiry and validate calls).
 	Now func() time.Time
+	// Log, when non-nil, receives structured run logs (each with a
+	// run_id attribute); nil falls back to slog.Default().
+	Log *slog.Logger
 }
 
 // now is the injected-clock seam used for the grant-expiry gate and the
@@ -40,6 +43,15 @@ func (p *ReviewPipeline) now() time.Time {
 		return p.Now()
 	}
 	return time.Now()
+}
+
+// runLog returns a logger carrying runID as a structured run_id field,
+// falling back to slog.Default() when no logger was injected.
+func (p *ReviewPipeline) runLog(runID string) *slog.Logger {
+	if p.Log != nil {
+		return p.Log.With("run_id", runID)
+	}
+	return slog.Default().With("run_id", runID)
 }
 
 var classificationToken = regexp.MustCompile(`(?i)\[(verified|opinion)\]`)
@@ -75,7 +87,7 @@ func (p *ReviewPipeline) Run(ctx context.Context, runID string) (string, error) 
 		err := p.Acknowledge(ackCtx, grant)
 		cancel()
 		if err != nil {
-			log.Printf("run %s: review acknowledgement: %v", runID, err)
+			p.runLog(runID).Warn("review acknowledgement failed", "err", err)
 		}
 	}
 

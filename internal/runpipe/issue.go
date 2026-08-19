@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -25,6 +26,9 @@ type IssuePipeline struct {
 	// Now returns the current time (wall clock by default; injected in
 	// tests for deterministic grant-expiry checks).
 	Now func() time.Time
+	// Log, when non-nil, receives structured run logs (each with a
+	// run_id attribute); nil falls back to slog.Default().
+	Log *slog.Logger
 }
 
 // now is the injected-clock seam: nil falls back to the wall clock so
