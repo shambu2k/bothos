@@ -24,6 +24,27 @@ import (
 
 const e2eSecret = "e2e-secret"
 
+func TestStatusRecorderCapturesStatusCode(t *testing.T) {
+	// An explicit WriteHeader is captured and forwarded.
+	rec := httptest.NewRecorder()
+	sr := &statusRecorder{ResponseWriter: rec}
+	sr.WriteHeader(http.StatusUnauthorized)
+	if sr.status != http.StatusUnauthorized || rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, recorder code = %d, want 401", sr.status, rec.Code)
+	}
+
+	// A bare Write (handler never calls WriteHeader) implies 200 on both the
+	// shim and the real writer, matching net/http's default.
+	rec2 := httptest.NewRecorder()
+	sr2 := &statusRecorder{ResponseWriter: rec2}
+	if _, err := sr2.Write([]byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	if sr2.status != http.StatusOK || rec2.Code != http.StatusOK {
+		t.Fatalf("write status = %d, recorder code = %d, want 200", sr2.status, rec2.Code)
+	}
+}
+
 // TestEndToEndWebhookToWorker exercises the whole Phase 0 spine in-process:
 // a signed webhook -> signature validation -> policy decision -> run row +
 // enqueued job -> River worker marks the run succeeded.

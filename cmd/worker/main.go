@@ -9,7 +9,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -26,6 +25,7 @@ import (
 	"github.com/shambu2k/bothos/internal/credstore"
 	"github.com/shambu2k/bothos/internal/executor"
 	"github.com/shambu2k/bothos/internal/ledger"
+	"github.com/shambu2k/bothos/internal/logx"
 	"github.com/shambu2k/bothos/internal/queue"
 	"github.com/shambu2k/bothos/internal/runpipe"
 	"github.com/shambu2k/bothos/internal/runtime"
@@ -43,8 +43,11 @@ func main() {
 		concurrency = flag.Int("concurrency", envIntOr("WORKER_CONCURRENCY", 2), "upgrade runs to process in parallel (each JIVA run is a heavy npm install)")
 	)
 	flag.Parse()
+
+	logger := logx.New()
 	if *dsn == "" {
-		log.Fatal("DATABASE_URL (or -dsn) is required")
+		logger.Error("DATABASE_URL (or -dsn) is required")
+		os.Exit(1)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -52,27 +55,30 @@ func main() {
 
 	l, err := ledger.New(ctx, *dsn)
 	if err != nil {
-		log.Fatalf("ledger: %v", err)
+		logger.Error("ledger init failed", "err", err)
+		os.Exit(1)
 	}
 	defer l.Close()
 	if err := l.Migrate(ctx); err != nil {
-		log.Fatalf("migrate: %v", err)
+		logger.Error("ledger migrate failed", "err", err)
+		os.Exit(1)
 	}
 
 	credStore := credstore.NewEnv(os.Getenv)
 	gh := executor.NewGitHubWriter(nil)
 
 	var handler queue.RunHandler = func(ctx context.Context, runID string) error {
+		runLogger := logx.WithRun(logger, runID)
 		run, err := l.RunByID(ctx, runID)
 		if err != nil {
-			log.Printf("run %s: load: %v", runID, err)
+			runLogger.Error("run load failed", "err", err)
 			return err
 		}
 		switch run.Trigger {
 		case "upgrade", "webhook_pull_request", "webhook_issue_labeled":
 		default:
 			err := fmt.Errorf("unsupported run trigger %q", run.Trigger)
-			log.Printf("run %s: %v", runID, err)
+			runLogger.Error("unsupported run trigger", "trigger", run.Trigger, "err", err)
 			_ = failRun(ctx, l, runID, err)
 			return nil
 		}
@@ -84,7 +90,7 @@ func main() {
 			"approve":     true,
 		})
 		if err != nil {
-			log.Printf("run %s: new pi runtime: %v", runID, err)
+			runLogger.Error("new pi runtime failed", "err", err)
 			_ = failRun(ctx, l, runID, err)
 			// Terminal: the run outcome is recorded in the ledger. Returning
 			// the error would make River retry the whole expensive agent run
@@ -119,7 +125,7 @@ func main() {
 			}).Run(ctx, runID)
 		}
 		if runErr != nil {
-			log.Printf("run %s: pipeline: %v", runID, runErr)
+			runLogger.Error("pipeline failed", "err", runErr)
 			_ = failRun(ctx, l, runID, runErr)
 			// Terminal: runpipe already recorded status+reason. A River retry
 			// would repeat an expensive model run.
@@ -132,19 +138,21 @@ func main() {
 		*queueName: {MaxWorkers: *concurrency},
 	}, handler)
 	if err != nil {
-		log.Fatalf("queue: %v", err)
+		logger.Error("queue open failed", "err", err)
+		os.Exit(1)
 	}
 	defer q.Close()
 
 	if err := q.Client().Start(ctx); err != nil {
-		log.Fatalf("start client: %v", err)
+		logger.Error("queue client start failed", "err", err)
+		os.Exit(1)
 	}
-	log.Printf("worker consuming queue %q", *queueName)
+	logger.Info("worker consuming queue", "queue", *queueName)
 
 	<-ctx.Done()
-	log.Println("worker shutting down")
+	logger.Info("worker shutting down")
 	if err := q.Client().Stop(context.Background()); err != nil {
-		log.Printf("river client stop: %v", err)
+		logger.Error("river client stop failed", "err", err)
 	}
 }
 
