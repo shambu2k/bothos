@@ -118,6 +118,7 @@ func (p *ReviewPipeline) Run(ctx context.Context, runID string) (string, error) 
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))
 	}
+	recordUsage(ctx, p.runLog(runID), runID, p.Store, result)
 	if err := verifyReviewWorktree(ctx, sandbox.Worktree(), grant.Scope.HeadSHA); err != nil {
 		return fail(err)
 	}

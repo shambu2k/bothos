@@ -205,6 +205,20 @@ func (p *Postgres) SetRunRef(ctx context.Context, id, ref string) error {
 	return err
 }
 
+// SetRunUsage records token/cost accounting on the run row (the columns
+// pre-exist in the schema; only non-zero values are written so a partial
+// report never clobbers a fuller one).
+func (p *Postgres) SetRunUsage(ctx context.Context, id, model string, tokensIn, tokensOut int, costUSD float64) error {
+	_, err := p.pool.Exec(ctx, `
+		UPDATE runs SET
+			model = COALESCE(NULLIF($2,''), model),
+			tokens_in = COALESCE(NULLIF($3,0), tokens_in),
+			tokens_out = COALESCE(NULLIF($4,0), tokens_out),
+			cost_usd = CASE WHEN $5::float8 > 0 THEN $5::float8 ELSE cost_usd END
+		WHERE id=$1`, id, model, tokensIn, tokensOut, costUSD)
+	return err
+}
+
 // SetRunFailure marks a run failed with an auditing reason (failure_reason).
 // Used by runpipe for terminal stand-downs that must NOT be retried by River.
 func (p *Postgres) SetRunFailure(ctx context.Context, id, reason string) error {

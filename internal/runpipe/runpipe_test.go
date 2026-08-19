@@ -14,11 +14,15 @@ import (
 )
 
 type fakeStore struct {
-	run           ledger.Run
-	last          ledger.RunStatus
-	failedReason  string
-	failureCalled bool
-	ref           string
+	run            ledger.Run
+	last           ledger.RunStatus
+	failedReason   string
+	failureCalled  bool
+	ref            string
+	usageModel     string
+	usageTokensIn  int
+	usageTokensOut int
+	usageCostUSD   float64
 }
 
 func (s *fakeStore) RunByID(ctx context.Context, id string) (ledger.Run, error) { return s.run, nil }
@@ -38,6 +42,13 @@ func (s *fakeStore) SetRunNeedsInput(ctx context.Context, id, reason string) err
 }
 func (s *fakeStore) SetRunRef(ctx context.Context, id, ref string) error {
 	s.ref = ref
+	return nil
+}
+func (s *fakeStore) SetRunUsage(ctx context.Context, id, model string, tokensIn, tokensOut int, costUSD float64) error {
+	s.usageModel = model
+	s.usageTokensIn = tokensIn
+	s.usageTokensOut = tokensOut
+	s.usageCostUSD = costUSD
 	return nil
 }
 

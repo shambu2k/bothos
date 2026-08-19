@@ -45,6 +45,9 @@ func (s *stubStore) SetRunRef(ctx context.Context, id, ref string) error {
 	s.ref = ref
 	return nil
 }
+func (s *stubStore) SetRunUsage(ctx context.Context, id, model string, tokensIn, tokensOut int, costUSD float64) error {
+	return nil
+}
 
 type staticStore struct{}
 

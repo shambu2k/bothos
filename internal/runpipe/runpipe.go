@@ -29,6 +29,7 @@ type Store interface {
 	SetRunFailure(ctx context.Context, id, reason string) error
 	SetRunNeedsInput(ctx context.Context, id, reason string) error
 	SetRunRef(ctx context.Context, id, ref string) error
+	SetRunUsage(ctx context.Context, id, model string, tokensIn, tokensOut int, costUSD float64) error
 }
 
 // Executor is the write seam (the real one is executor.Executor).
@@ -72,6 +73,15 @@ func (p *Pipeline) runLog(runID string) *slog.Logger {
 		return p.Log.With("run_id", runID)
 	}
 	return slog.Default().With("run_id", runID)
+}
+
+// recordUsage persists per-run model/token/cost accounting after the agent
+// run. Usage recording is best-effort: a ledger failure must never fail the
+// run, so the error is logged and dropped.
+func recordUsage(ctx context.Context, log *slog.Logger, runID string, st Store, res runtime.RunResult) {
+	if err := st.SetRunUsage(ctx, runID, res.Model, res.TokensIn, res.TokensOut, res.CostUSD); err != nil {
+		log.Error("record run usage", "err", err)
+	}
 }
 
 // Run executes the security orchestration and returns the GitHub ref (e.g.
@@ -126,6 +136,7 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))
 	}
+	recordUsage(ctx, p.runLog(runID), runID, p.Store, res)
 	verdictStatus := "none"
 	if res.Verdict != nil {
 		verdictStatus = res.Verdict.Status

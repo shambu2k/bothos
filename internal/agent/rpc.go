@@ -314,14 +314,17 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		if reviewErr != nil {
 			return runtime.RunResult{}, reviewErr
 		}
-		return runtime.RunResult{Intents: []intent.Envelope{reviewEnv}}, nil
+		// Note: TokensIn/TokensOut/CostUSD stay zero here — the PI RPC events
+		// do not currently report token usage, so cost accounting remains
+		// zero-cost until PI exposes it.
+		return runtime.RunResult{Intents: []intent.Envelope{reviewEnv}, Model: r.model}, nil
 	}
 
 	// A blocked verdict is a stand-down: the agent could not complete the change
 	// and opens no PR. runpipe routes this to a terminal failure record (never
 	// a River retry). Verification was already skipped above.
 	if v != nil && v.Status == runtime.VerdictBlocked {
-		return runtime.RunResult{Verdict: v}, nil
+		return runtime.RunResult{Verdict: v, Model: r.model}, nil
 	}
 
 	// Diff gate: the agent must have committed on its branch (rev-list ahead of
@@ -332,7 +335,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 			return runtime.RunResult{Verdict: &runtime.Verdict{
 				Status:  runtime.VerdictBlocked,
 				Summary: "The agent did not produce a committed change or a usable blocked report. Please provide one concrete implementation decision, then trigger a new labeled run.",
-			}}, nil
+			}, Model: r.model}, nil
 		}
 		return runtime.RunResult{}, fmt.Errorf("agent produced no commits on its branch")
 	}
@@ -340,6 +343,7 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 	return runtime.RunResult{
 		Intents: []intent.Envelope{openPRIntent(in.RunID, v, vr)},
 		Verdict: v,
+		Model:   r.model,
 	}, nil
 }
 

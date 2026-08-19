@@ -114,7 +114,11 @@ type RunInput struct {
 }
 
 type RunResult struct {
-	Intents   []intent.Envelope
+	Intents []intent.Envelope
+	// Model is the agent model the run executed on ("" when unknown). It is
+	// populated by the runtime so the ledger can record per-run cost
+	// accounting without a parallel usage type.
+	Model     string
 	TokensIn  int
 	TokensOut int
 	CostUSD   float64

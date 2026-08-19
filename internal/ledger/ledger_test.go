@@ -345,6 +345,46 @@ func TestSetRunRefPersists(t *testing.T) {
 	}
 }
 
+func TestSetRunUsagePersists(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	insertRun(t, st, "run-usage")
+
+	if err := st.SetRunUsage(ctx, "run-usage", "openrouter/deepseek/deepseek-v4-flash-0731", 1234, 567, 0.0412); err != nil {
+		t.Fatalf("set usage: %v", err)
+	}
+	var model string
+	var tokensIn, tokensOut int
+	var cost float64
+	if err := st.pool.QueryRow(ctx,
+		`SELECT COALESCE(model,''), COALESCE(tokens_in,0), COALESCE(tokens_out,0), COALESCE(cost_usd,0)
+		 FROM runs WHERE id=$1`, "run-usage").Scan(&model, &tokensIn, &tokensOut, &cost); err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	if model != "openrouter/deepseek/deepseek-v4-flash-0731" {
+		t.Fatalf("model = %q", model)
+	}
+	if tokensIn != 1234 || tokensOut != 567 {
+		t.Fatalf("tokens in/out = %d/%d", tokensIn, tokensOut)
+	}
+	if cost != 0.0412 {
+		t.Fatalf("cost_usd = %v", cost)
+	}
+
+	// A partial report (zero tokens/cost) must not clobber existing values.
+	if err := st.SetRunUsage(ctx, "run-usage", "", 0, 0, 0); err != nil {
+		t.Fatalf("set usage (empty): %v", err)
+	}
+	if err := st.pool.QueryRow(ctx,
+		`SELECT model, tokens_in, tokens_out, cost_usd FROM runs WHERE id=$1`, "run-usage").
+		Scan(&model, &tokensIn, &tokensOut, &cost); err != nil {
+		t.Fatalf("re-read usage: %v", err)
+	}
+	if model != "openrouter/deepseek/deepseek-v4-flash-0731" || tokensIn != 1234 || tokensOut != 567 || cost != 0.0412 {
+		t.Fatalf("partial report clobbered usage: model=%q tokens=%d/%d cost=%v", model, tokensIn, tokensOut, cost)
+	}
+}
+
 func TestRulesForRepoIsDeploymentOwnedAndDefaultOff(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

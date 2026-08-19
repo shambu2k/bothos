@@ -140,3 +140,18 @@ Run status values are `queued`, `running`, `succeeded`, `failed`, `denied`, and
 `needs_input`. A shutdown does not resume a partial agent session automatically.
 To request a new review or issue attempt after a worker restart, use a new
 manual trigger on the pull request or reapply an allowed issue label.
+
+## Run usage
+
+Each `runs` row carries per-run cost accounting columns: `model`,
+`tokens_in`, `tokens_out`, and `cost_usd`. The columns are populated when the
+runtime reports usage — the PI runtime currently records only `model`; token
+and cost columns stay `NULL` (cost accounting remains zero) until PI exposes
+token usage. Query completed runs with:
+
+```sql
+SELECT repo_id, trigger, status, started_at, ended_at,
+       EXTRACT(EPOCH FROM (ended_at - started_at))::int AS duration_s,
+       model, tokens_in, tokens_out, round(cost_usd::numeric, 4) AS cost_usd
+FROM runs WHERE ended_at IS NOT NULL ORDER BY started_at DESC;
+```

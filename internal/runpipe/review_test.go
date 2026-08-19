@@ -27,6 +27,7 @@ type reviewStore struct {
 	statuses []ledger.RunStatus
 	failure  string
 	ref      string
+	usage    runtime.RunResult
 }
 
 func (s *reviewStore) RunByID(context.Context, string) (ledger.Run, error) { return s.run, nil }
@@ -44,6 +45,10 @@ func (s *reviewStore) SetRunNeedsInput(_ context.Context, _ string, reason strin
 }
 func (s *reviewStore) SetRunRef(_ context.Context, _ string, ref string) error {
 	s.ref = ref
+	return nil
+}
+func (s *reviewStore) SetRunUsage(_ context.Context, _ string, model string, tokensIn, tokensOut int, costUSD float64) error {
+	s.usage = runtime.RunResult{Model: model, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: costUSD}
 	return nil
 }
 

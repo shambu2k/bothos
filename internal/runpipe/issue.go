@@ -40,6 +40,15 @@ func (p *IssuePipeline) now() time.Time {
 	return time.Now()
 }
 
+// runLog returns a logger carrying runID as a structured run_id field,
+// falling back to slog.Default() when no logger was injected.
+func (p *IssuePipeline) runLog(runID string) *slog.Logger {
+	if p.Log != nil {
+		return p.Log.With("run_id", runID)
+	}
+	return slog.Default().With("run_id", runID)
+}
+
 func (p *IssuePipeline) Run(ctx context.Context, runID string) (string, error) {
 	run, err := p.Store.RunByID(ctx, runID)
 	if err != nil {
@@ -90,6 +99,7 @@ func (p *IssuePipeline) Run(ctx context.Context, runID string) (string, error) {
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))
 	}
+	recordUsage(ctx, p.runLog(runID), runID, p.Store, res)
 
 	if res.Verdict != nil && res.Verdict.Status == runtime.VerdictBlocked {
 		return p.recordBlocked(ctx, runID, grant, sb.Worktree(), res.Verdict)
