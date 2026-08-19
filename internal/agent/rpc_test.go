@@ -695,3 +695,56 @@ func TestAwaitConfigAcks(t *testing.T) {
 		t.Fatal("expected error on EOF before all acks")
 	}
 }
+
+// ---------- session usage reporting ----------
+
+// TestRPCReportsSessionUsage: the harness asks the running pi for cumulative
+// session stats (get_session_stats) before shutdown and threads the values
+// into the RunResult, so the ledger can record tokens/cost per run.
+func TestRPCReportsSessionUsage(t *testing.T) {
+	repo := newRepo(t)
+	r, _ := newRPC(t, map[string]string{
+		"FAKE_PI_EDIT":       "1",
+		"FAKE_PI_VERDICT":    `{"status":"done","summary":"bumped tar","verification":"ran checks"}`,
+		"FAKE_PI_TOKENS_IN":  "777",
+		"FAKE_PI_TOKENS_OUT": "22",
+		"FAKE_PI_COST":       "0.0420",
+	})
+	r.Verify = scriptedVerify(verifier.Result{Pass: true})
+
+	res, err := r.Run(context.Background(), runtime.RunInput{
+		RunID: "run-usage", Task: task(), Sandbox: dirSandbox{dir: repo},
+		Limits: runtime.Limits{MaxSeconds: 5 * time.Minute},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.TokensIn != 777 || res.TokensOut != 22 || res.CostUSD != 0.0420 {
+		t.Fatalf("usage = in=%d out=%d cost=%f, want 777/22/0.042000", res.TokensIn, res.TokensOut, res.CostUSD)
+	}
+	if res.Model == "" {
+		t.Fatal("model not reported")
+	}
+}
+
+// TestSessionUsageDegradesOnSilentPi: a pi build that does not answer
+// get_session_stats (or an EOF/timeout) must never fail the run — the stats
+// reader yields the zero value and sessionUsage returns zeros.
+func TestSessionUsageDegradesOnSilentPi(t *testing.T) {
+	// Stream of plain events with no get_session_stats response.
+	stream := "{\"type\":\"session\"}\n" +
+		"{\"type\":\"agent_settled\"}\n"
+	sc := bufio.NewScanner(strings.NewReader(stream))
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	if got := (&RPC{}).awaitSessionStats(sc); got.Type != "" || got.Command != "" {
+		t.Fatalf("awaitSessionStats on non-stats stream = %+v, want zero value", got)
+	}
+
+	// Malformed stats JSON is skipped, EOF is tolerated.
+	bad := "{\"type\":\"message_update\",\"usage\":{broken}}\n"
+	sc2 := bufio.NewScanner(strings.NewReader(bad))
+	sc2.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	if got := (&RPC{}).awaitSessionStats(sc2); got.Type != "" {
+		t.Fatalf("awaitSessionStats over malformed stream = %+v, want zero value", got)
+	}
+}

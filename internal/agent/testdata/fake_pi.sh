@@ -42,6 +42,17 @@ while IFS= read -r line || [ -n "$line" ]; do
 		id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 		echo "{\"id\":\"$id\",\"type\":\"response\",\"command\":\"cfg\",\"success\":true}"
 		;;
+	*'"type":"get_session_stats"'*)
+		# Session usage stats (cumulative token counts + cost), as documented
+		# for real pi's get_session_stats. Env-tunable so tests can assert
+		# concrete values; defaults mimic a small real session.
+		id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+		in="${FAKE_PI_TOKENS_IN:-1200}"
+		out="${FAKE_PI_TOKENS_OUT:-300}"
+		cost="${FAKE_PI_COST:-0.0123}"
+		printf '{"id":"%s","type":"response","command":"get_session_stats","success":true,"data":{"tokens":{"input":%s,"output":%s,"cacheRead":0,"cacheWrite":0,"total":%s},"cost":%s}}\n' \
+			"$id" "$in" "$out" "$((in + out))" "$cost"
+		;;
 	*'"type":"prompt"'*)
 		n=$((n + 1))
 

@@ -82,6 +82,29 @@ type rpcEvent struct {
 	WillRetry bool   `json:"willRetry,omitempty"`
 }
 
+// sessionStatsResponse is the RPC response to the documented get_session_stats
+// command, which reports cumulative session token usage and cost (assistant
+// messages, tool usage, and compaction/branch-summary generation).
+type sessionStatsResponse struct {
+	ID      string           `json:"id,omitempty"`
+	Type    string           `json:"type,omitempty"`
+	Command string           `json:"command,omitempty"`
+	Success *bool            `json:"success,omitempty"`
+	Data    sessionStatsData `json:"data,omitempty"`
+}
+
+type sessionStatsData struct {
+	Tokens struct {
+		Input  int64 `json:"input"`
+		Output int64 `json:"output"`
+		// cacheRead/cacheWrite/total are reported by PI but not persisted by
+		// the ledger today; only input/output plus cost are consumed.
+	} `json:"tokens"`
+	Cost float64 `json:"cost"`
+}
+
+const sessionStatsTimeout = 10 * time.Second
+
 // Run runs one upgrade task through a per-run `pi --mode rpc` subprocess whose
 // cwd is the sandbox worktree and whose session is persisted under
 // sessionDir/<runID>. After the agent finishes it gates on a real worktree diff
@@ -292,6 +315,12 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		reviewEnv, reviewErr = readReviewIntent(worktree, in.RunID)
 	}
 
+	// Capture the session's cumulative token/cost usage before shutdown: all
+	// LLM work (prompts, feedback rounds, review) is done at this point. A
+	// silent or old PI leaves the values zero; the ledger COALESCEs partial
+	// reports, so a missing stat never clobbers a recorded one.
+	tokensIn, tokensOut, costUSD := r.sessionUsage(in.RunID, enc, sc)
+
 	// The .bothos directory is harness bookkeeping; it must never reach the
 	// diff gate or the PR.
 	_ = os.RemoveAll(filepath.Join(worktree, ".bothos"))
@@ -314,17 +343,20 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 		if reviewErr != nil {
 			return runtime.RunResult{}, reviewErr
 		}
-		// Note: TokensIn/TokensOut/CostUSD stay zero here — the PI RPC events
-		// do not currently report token usage, so cost accounting remains
-		// zero-cost until PI exposes it.
-		return runtime.RunResult{Intents: []intent.Envelope{reviewEnv}, Model: r.model}, nil
+		return runtime.RunResult{
+			Intents:   []intent.Envelope{reviewEnv},
+			Model:     r.model,
+			TokensIn:  tokensIn,
+			TokensOut: tokensOut,
+			CostUSD:   costUSD,
+		}, nil
 	}
 
 	// A blocked verdict is a stand-down: the agent could not complete the change
 	// and opens no PR. runpipe routes this to a terminal failure record (never
 	// a River retry). Verification was already skipped above.
 	if v != nil && v.Status == runtime.VerdictBlocked {
-		return runtime.RunResult{Verdict: v, Model: r.model}, nil
+		return runtime.RunResult{Verdict: v, Model: r.model, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: costUSD}, nil
 	}
 
 	// Diff gate: the agent must have committed on its branch (rev-list ahead of
@@ -335,15 +367,18 @@ func (r *RPC) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, 
 			return runtime.RunResult{Verdict: &runtime.Verdict{
 				Status:  runtime.VerdictBlocked,
 				Summary: "The agent did not produce a committed change or a usable blocked report. Please provide one concrete implementation decision, then trigger a new labeled run.",
-			}, Model: r.model}, nil
+			}, Model: r.model, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: costUSD}, nil
 		}
 		return runtime.RunResult{}, fmt.Errorf("agent produced no commits on its branch")
 	}
 
 	return runtime.RunResult{
-		Intents: []intent.Envelope{openPRIntent(in.RunID, v, vr)},
-		Verdict: v,
-		Model:   r.model,
+		Intents:   []intent.Envelope{openPRIntent(in.RunID, v, vr)},
+		Verdict:   v,
+		Model:     r.model,
+		TokensIn:  tokensIn,
+		TokensOut: tokensOut,
+		CostUSD:   costUSD,
 	}, nil
 }
 
@@ -516,6 +551,49 @@ func (r *RPC) awaitSettled(runID string, sc *bufio.Scanner) error {
 		return fmt.Errorf("pi rpc: scan: %w", err)
 	}
 	return fmt.Errorf("pi rpc: agent did not settle (EOF)")
+}
+
+// sessionUsage asks the PI RPC process for the run's cumulative token usage and
+// cost via the documented get_session_stats command, sent after all work
+// (including verifier feedback rounds) and before stdin closes. It degrades
+// gracefully: any failure (rejected command, timeout, silent old pi) yields
+// zero values so usage recording never fails or stalls a run.
+func (r *RPC) sessionUsage(runID string, enc *json.Encoder, sc *bufio.Scanner) (tokensIn, tokensOut int, costUSD float64) {
+	if err := enc.Encode(map[string]any{"id": "session-stats", "type": "get_session_stats"}); err != nil {
+		r.runLogger(runID).Warn("session stats request failed", "err", err)
+		return 0, 0, 0
+	}
+	// The scanner blocks on the pipe; drive it from a goroutine so the timeout
+	// can fire and the Run context can cancel it (same pattern as config acks).
+	done := make(chan sessionStatsResponse, 1)
+	go func() { done <- r.awaitSessionStats(sc) }()
+	select {
+	case s := <-done:
+		if s.Success == nil || !*s.Success {
+			r.runLogger(runID).Warn("session stats command rejected")
+			return 0, 0, 0
+		}
+		return int(s.Data.Tokens.Input), int(s.Data.Tokens.Output), s.Data.Cost
+	case <-time.After(sessionStatsTimeout):
+		r.runLogger(runID).Warn("session stats timed out")
+		return 0, 0, 0
+	}
+}
+
+// awaitSessionStats scans RPC stdout for the get_session_stats response. The
+// command is matched by type+command (not only by id) so a PI build that does
+// not echo request ids still answers.
+func (r *RPC) awaitSessionStats(sc *bufio.Scanner) sessionStatsResponse {
+	for sc.Scan() {
+		var ev sessionStatsResponse
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue // diagnostics / non-JSON line: not fatal
+		}
+		if ev.Type == "response" && ev.Command == "get_session_stats" {
+			return ev
+		}
+	}
+	return sessionStatsResponse{}
 }
 
 // readVerdict parses <worktree>/.bothos/verdict.json. Returns nil, nil when

@@ -144,10 +144,12 @@ manual trigger on the pull request or reapply an allowed issue label.
 ## Run usage
 
 Each `runs` row carries per-run cost accounting columns: `model`,
-`tokens_in`, `tokens_out`, and `cost_usd`. The columns are populated when the
-runtime reports usage — the PI runtime currently records only `model`; token
-and cost columns stay `NULL` (cost accounting remains zero) until PI exposes
-token usage. Query completed runs with:
+`tokens_in`, `tokens_out`, and `cost_usd`. The PI runtime reports all four: it
+asks the RPC session for cumulative statistics (`get_session_stats`) at the end
+of every run, so tokens and cost reflect the full session including verifier
+feedback rounds. A silent or older PI leaves tokens/cost `NULL` (the ledger
+writes only non-zero values, so a partial report never clobbers a fuller one).
+Query completed runs with:
 
 ```sql
 SELECT repo_id, trigger, status, started_at, ended_at,
