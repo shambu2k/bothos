@@ -90,9 +90,9 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	}
 
 	// A sane wall-clock cap (the grant's intent.Limits carries no duration).
-	// JIVA is a large backend: clone + npm install + tests + edits routinely
-	// exceed 15m, so cap generously at 40m (drafts are cheap to kill).
-	wall := 40 * time.Minute
+	// Large-backend clones routinely exceed 15m, so cap generously at 40m
+	// (drafts are cheap to kill).
+	wall := time.Duration(runtime.AgentWallSeconds) * time.Second
 	res, err := p.Agent.Run(ctx, runtime.RunInput{
 		RunID:   runID,
 		Task:    runtime.SecurityTask{BaseRef: m.BaseRef},

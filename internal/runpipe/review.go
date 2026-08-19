@@ -89,7 +89,7 @@ func (p *ReviewPipeline) Run(ctx context.Context, runID string) (string, error) 
 			RepoURL:  "https://github.com/" + grant.Repo.Owner + "/" + grant.Repo.Name + ".git",
 		},
 		Sandbox: sandbox,
-		Limits:  runtime.Limits{MaxSeconds: 40 * time.Minute},
+		Limits:  runtime.Limits{MaxSeconds: time.Duration(runtime.AgentWallSeconds) * time.Second},
 	})
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))

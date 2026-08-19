@@ -69,7 +69,7 @@ func (p *IssuePipeline) Run(ctx context.Context, runID string) (string, error) {
 
 	res, err := p.Agent.Run(ctx, runtime.RunInput{
 		RunID: runID, Task: task, Sandbox: sb,
-		Limits: runtime.Limits{MaxSeconds: 40 * time.Minute},
+		Limits: runtime.Limits{MaxSeconds: time.Duration(runtime.AgentWallSeconds) * time.Second},
 	})
 	if err != nil {
 		return fail(fmt.Errorf("agent: %w", err))
