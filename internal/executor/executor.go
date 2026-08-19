@@ -196,6 +196,9 @@ func (e *Executor) Execute(ctx context.Context, env intent.Envelope, g intent.Gr
 		if err := e.gh.PushBranch(ctx, cred, branch, worktree); err != nil {
 			return Result{}, fmt.Errorf("push branch: %w", err)
 		}
+		//nolint:ineffassign,staticcheck // fp: err is read by the shared
+		// `if err != nil` check after the switch; ineffassign/SA4006 mis-flag
+		// this per-branch write.
 		ref, err = e.gh.OpenPR(ctx, cred, OpenPRWrite{
 			Branch: branch,
 			Base:   base,

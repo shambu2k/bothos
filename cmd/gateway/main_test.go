@@ -55,7 +55,7 @@ func TestEndToEndWebhookToWorker(t *testing.T) {
 	if err := q.Client().Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer q.Client().Stop(ctx)
+	defer func() { _ = q.Client().Stop(ctx) }()
 
 	d := dispatch.New(l, q, func(ctx context.Context, owner, name string) (policy.Rules, error) {
 		return policy.Rules{Enabled: true, AllowedLabels: []string{"kind/upgrade"}, ActorAllowlist: []string{"shambu2k"}}, nil

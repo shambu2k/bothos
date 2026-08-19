@@ -70,8 +70,9 @@ func TestKeyIncludesCorpusFilter(t *testing.T) {
 func TestTreeSHAUsedNotCommit(t *testing.T) {
 	// Two commits with the same tree share a graph; the doc is explicit that a
 	// tree SHA (not commit SHA) keys the cache.
-	if Key("v", baseCfg(), "tree-abc") != Key("v", baseCfg(), "tree-abc") {
-		t.Fatal("same tree sha must key identically")
+	same := Key("v", baseCfg(), "tree-abc")
+	if got := Key("v", baseCfg(), "tree-abc"); got != same {
+		t.Fatalf("same tree sha keyed identically, got %q want %q", got, same)
 	}
 	if Key("v", baseCfg(), "tree-abc") == Key("v", baseCfg(), "tree-def") {
 		t.Fatal("different tree shas must key differently")

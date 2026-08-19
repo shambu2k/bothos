@@ -20,6 +20,10 @@ jobs:
         run: go vet ./...
       - name: Test (race, serialized)
         run: go test -count=1 -race -p 1 ./...
+      - name: Lint
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.2
+          golangci-lint run --timeout 5m
 
   vuln:
     runs-on: ubuntu-latest

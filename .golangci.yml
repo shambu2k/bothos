@@ -1,0 +1,37 @@
+# golangci-lint configuration. This repo targets go 1.26.5, so the linter
+# itself must be built with a go toolchain >= that version (see CI: `go
+# install ...@v1.64.2` under setup-go 1.26) or it refuses to load the config.
+#
+# Starting gate for a codebase that was never linted before: this is the set
+# that passes cleanly today. Tighten (enable more linters, narrow exclusions)
+# in follow-ups.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck  # includes gosimple checks (folded in since v1.62)
+    - unused
+
+linters-settings:
+  errcheck:
+    exclude-functions:
+      # Intentional discard: on a deferred tx, the only sensible action is
+      # best-effort rollback; nothing can be done with the error. See
+      # internal/dispatch/dispatch.go (defer tx.Rollback(ctx)).
+      - "(*github.com/jackc/pgx/v5.Tx).Rollback"
+  staticcheck:
+    checks:
+      # SA1019 fires on deprecated github-go helpers (String/Int/Bool → Ptr).
+      # It is mechanical deprecation churn across the whole repo, not a
+      # correctness bug; defer that sweep and ignore the notice so the initial
+      # gate is green. Other real staticcheck checks stay on.
+      - all
+      - "-SA1019"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

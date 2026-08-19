@@ -151,7 +151,9 @@ func TestSetRunFailureRecordsReason(t *testing.T) {
 func TestRecordCapabilityGap(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
-	st.InsertRun(ctx, Run{ID: "run-1", RepoID: "r", Trigger: "scheduled", ScopeKind: "scheduled", Grant: []byte("{}"), Decision: "allow", Status: RunQueued})
+	if err := st.InsertRun(ctx, Run{ID: "run-1", RepoID: "r", Trigger: "scheduled", ScopeKind: "scheduled", Grant: []byte("{}"), Decision: "allow", Status: RunQueued}); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
 	if err := st.RecordCapabilityGap(ctx, "run-1", "KindNuke", "agent tried a verb outside the set"); err != nil {
 		t.Fatalf("record gap: %v", err)
 	}

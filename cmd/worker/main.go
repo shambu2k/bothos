@@ -143,7 +143,9 @@ func main() {
 
 	<-ctx.Done()
 	log.Println("worker shutting down")
-	q.Client().Stop(context.Background())
+	if err := q.Client().Stop(context.Background()); err != nil {
+		log.Printf("river client stop: %v", err)
+	}
 }
 
 // newSandboxer clones the repo's default branch into an ephemeral temp dir and

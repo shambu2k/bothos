@@ -35,8 +35,10 @@ func TestRunScanClonesScansAndUpserts(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	testdb.Truncate(t, testdb.DSN(t), "runs", "findings", "river_job")
-	st.InsertRun(ctx, ledger.Run{ID: "scan-1", RepoID: "shambu2k/repo", Trigger: "scheduled",
-		ScopeKind: "scheduled", Grant: []byte(`{}`), Decision: "allow", Status: ledger.RunQueued})
+	if err := st.InsertRun(ctx, ledger.Run{ID: "scan-1", RepoID: "shambu2k/repo", Trigger: "scheduled",
+		ScopeKind: "scheduled", Grant: []byte(`{}`), Decision: "allow", Status: ledger.RunQueued}); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
 
 	// fake clone: nothing to fetch (the fake scanner ignores the tree)
 	fakeClone := func(ctx context.Context, dir, repo string) error { return nil }
@@ -78,8 +80,10 @@ func TestRunScanIncludesRenovate(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	testdb.Truncate(t, testdb.DSN(t), "runs", "findings", "updates", "river_job")
-	st.InsertRun(ctx, ledger.Run{ID: "scan-2", RepoID: "shambu2k/repo", Trigger: "scheduled",
-		ScopeKind: "scheduled", Grant: []byte(`{}`), Decision: "allow", Status: ledger.RunQueued})
+	if err := st.InsertRun(ctx, ledger.Run{ID: "scan-2", RepoID: "shambu2k/repo", Trigger: "scheduled",
+		ScopeKind: "scheduled", Grant: []byte(`{}`), Decision: "allow", Status: ledger.RunQueued}); err != nil {
+		t.Fatalf("insert run: %v", err)
+	}
 
 	fakeClone := func(ctx context.Context, dir, repo string) error { return nil }
 	// fake renovate returns a resolvable update
