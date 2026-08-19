@@ -121,7 +121,7 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	log.Printf("run %s: agent verdict %q", runID, verdictStatus)
 	var openPR *intent.Envelope
 	for i := range res.Intents {
-		if res.Intents[i].Kind == "open_pr" {
+		if res.Intents[i].Kind == intent.KindOpenPR {
 			openPR = &res.Intents[i]
 			break
 		}
