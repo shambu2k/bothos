@@ -28,6 +28,18 @@ type ReviewPipeline struct {
 	Exec        Executor
 	Sandbox     ReviewSandboxer
 	Checks      func(context.Context, string) ([]review.Finding, error)
+	// Now returns the current time (nil clock defaults to the wall clock;
+	// tests inject it for deterministic grant-expiry and validate calls).
+	Now func() time.Time
+}
+
+// now is the injected-clock seam used for the grant-expiry gate and the
+// review-validate timestamp.
+func (p *ReviewPipeline) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
 }
 
 var classificationToken = regexp.MustCompile(`(?i)\[(verified|opinion)\]`)
@@ -55,7 +67,7 @@ func (p *ReviewPipeline) Run(ctx context.Context, runID string) (string, error) 
 		strings.TrimSpace(grant.Scope.BaseSHA) == "" || strings.TrimSpace(grant.Scope.HeadSHA) == "" {
 		return fail(fmt.Errorf("review grant requires pull-request number and immutable base/head SHAs"))
 	}
-	if time.Now().After(grant.ExpiresAt) {
+	if p.now().After(grant.ExpiresAt) {
 		return fail(fmt.Errorf("grant expired at %s (dispatched %s)", grant.ExpiresAt, grant.IssuedAt))
 	}
 	if grant.Manual && p.Acknowledge != nil {
@@ -106,7 +118,7 @@ func (p *ReviewPipeline) Run(ctx context.Context, runID string) (string, error) 
 		}
 	}
 
-	decoded, err := intent.Validate(result.Intents[0], grant, time.Now())
+	decoded, err := intent.Validate(result.Intents[0], grant, p.now())
 	if err != nil {
 		return fail(fmt.Errorf("review intent: %w", err))
 	}

@@ -219,6 +219,79 @@ func TestReviewPipelineRejectsNonReviewIntentAndMutations(t *testing.T) {
 	}
 }
 
+// TestReviewPipelineExpiryFailsFastAndSkipsAgent: a stale review grant must
+// fail before the agent starts, deterministically via the injected clock,
+// and record the failure. rejectAgent would panic if the runtime ran.
+func TestReviewPipelineExpiryFailsFastAndSkipsAgent(t *testing.T) {
+	dir, baseSHA, headSHA := newReviewPipelineRepo(t)
+	grant := reviewGrant(t, "review-expiry", baseSHA, headSHA)
+	grant.IssuedAt = time.Unix(1_700_000_000, 0)
+	grant.ExpiresAt = time.Unix(1_700_003_600, 0) // fixed past expiry
+	store := &reviewStore{run: ledger.Run{ID: grant.RunID, Trigger: "webhook_pull_request", Grant: mustReviewJSON(t, grant)}}
+	sandboxCalled := false
+	pipeline := &ReviewPipeline{
+		Store: store,
+		Agent: rejectAgent{}, // would panic if invoked
+		Exec:  &reviewExecutor{},
+		Sandbox: func(_ context.Context, repo string, pr int, base, head string) (runtime.Sandbox, error) {
+			sandboxCalled = true
+			return reviewDirSandbox{dir: dir}, nil
+		},
+		Now: func() time.Time { return time.Unix(1_700_007_200, 0) }, // after expiry
+	}
+	_, err := pipeline.Run(context.Background(), grant.RunID)
+	if err == nil {
+		t.Fatal("expected error for expired review grant")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("error missing 'expired': %v", err)
+	}
+	if sandboxCalled {
+		t.Fatal("sandbox must not be created for an expired grant")
+	}
+	if g := store.statuses; g == nil || g[len(g)-1] != ledger.RunFailed {
+		t.Fatalf("statuses = %v", g)
+	}
+	if !strings.Contains(store.failure, "expired") {
+		t.Fatalf("failure reason = %q", store.failure)
+	}
+}
+
+// TestReviewPipelineProceedsBeforeExpiry: with Now pinned before ExpiresAt,
+// the expiry gate must not trip — the pipeline proceeds to invoke the agent
+// (which here produces no review intent) rather than aborting on expiry.
+func TestReviewPipelineProceedsBeforeExpiry(t *testing.T) {
+	dir, baseSHA, headSHA := newReviewPipelineRepo(t)
+	grant := reviewGrant(t, "review-window", baseSHA, headSHA)
+	grant.ExpiresAt = time.Unix(1_700_100_000, 0)
+	store := &reviewStore{run: ledger.Run{ID: grant.RunID, Trigger: "webhook_pull_request", Grant: mustReviewJSON(t, grant)}}
+	sandboxCalled := false
+	agentRan := false
+	pipeline := &ReviewPipeline{
+		Store: store,
+		Agent: reviewAgentFunc(func(_ context.Context, in runtime.RunInput) (runtime.RunResult, error) {
+			agentRan = true
+			return runtime.RunResult{Intents: nil}, nil // no intents -> terminal failure
+		}),
+		Exec: &reviewExecutor{},
+		Sandbox: func(_ context.Context, repo string, pr int, base, head string) (runtime.Sandbox, error) {
+			sandboxCalled = true
+			return reviewDirSandbox{dir: dir}, nil
+		},
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0) }, // before expiry
+	}
+	_, err := pipeline.Run(context.Background(), grant.RunID)
+	if err == nil {
+		t.Fatal("expected downstream failure (no review intent)")
+	}
+	if strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expiry gate must not trip within grant window: %v", err)
+	}
+	if !sandboxCalled || !agentRan {
+		t.Fatalf("sandbox=%v agent=%v: pipeline must proceed past the expiry gate", sandboxCalled, agentRan)
+	}
+}
+
 func validModelReview() intent.PostReview {
 	return intent.PostReview{
 		Verdict:  intent.VerdictComment,

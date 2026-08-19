@@ -183,37 +183,84 @@ func TestPipelineBlockedStandDownIsTerminal(t *testing.T) {
 	}
 }
 
-// TestPipelineFailsFastOnExpiredGrant: a stale grant must fail the run BEFORE
-// the agent starts (no wasted token spend) and record the reason.
-func TestPipelineFailsFastOnExpiredGrant(t *testing.T) {
+// rejectAgent fails the test if the runtime is ever invoked, proving fail-fast:
+// a stale grant must be rejected before the agent (and its token spend) starts.
+type rejectAgent struct{}
+
+func (rejectAgent) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, error) {
+	panic("agent must not run: grant was already expired")
+}
+
+// TestPipelineExpiryFailsFastAndSkipsAgent: a stale grant must fail the run
+// BEFORE the agent starts (no wasted token spend), deterministically via the
+// injected clock, and record the reason as a failed run.
+func TestPipelineExpiryFailsFastAndSkipsAgent(t *testing.T) {
+	expires := time.Unix(1_700_003_600, 0)
+	issued := time.Unix(1_700_000_000, 0)
 	grantJSON, _ := json.Marshal(intent.Grant{
 		Repo:      intent.Repo{Owner: "acme", Name: "repo"},
-		IssuedAt:  time.Now().Add(-2 * time.Hour),
-		ExpiresAt: time.Now().Add(-time.Hour), // already expired
+		IssuedAt:  issued,
+		ExpiresAt: expires, // fixed past expiry
 	})
 	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
-	st := &fakeStore{run: ledger.Run{ID: "r4", Grant: grantJSON, Meta: metaJSON}}
-	agentRan := false
+	st := &fakeStore{run: ledger.Run{ID: "r4", Grant: grantJSON, Meta: metaJSON, Decision: "allow"}}
+	sandboxCalled := false
 	p := &Pipeline{
 		Store: st,
-		Agent: fakeAgent{},
+		Agent: rejectAgent{}, // would panic if invoked
 		Exec:  &fakeExec{},
 		Sandbox: func(ctx context.Context, r string) (runtime.Sandbox, error) {
-			agentRan = true
+			sandboxCalled = true
 			return fakeSandbox{"/tmp/x"}, nil
 		},
+		Now: func() time.Time { return time.Unix(1_700_007_200, 0) }, // after expires
 	}
 	ref, err := p.Run(context.Background(), "r4")
 	if err == nil {
 		t.Fatal("expected error for expired grant")
 	}
-	if agentRan {
-		t.Fatal("agent must not run for an expired grant")
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("error missing 'expired': %v", err)
+	}
+	if sandboxCalled {
+		t.Fatal("sandbox must not be created for an expired grant")
 	}
 	if ref != "" {
 		t.Fatalf("expected no ref, got %q", ref)
 	}
-	if !strings.Contains(st.failedReason, "expired") {
-		t.Fatalf("failure reason missing 'expired': %q", st.failedReason)
+	if st.last != ledger.RunFailed {
+		t.Fatalf("expected RunFailed, got %q", st.last)
+	}
+	if !st.failureCalled || !strings.Contains(st.failedReason, "expired") {
+		t.Fatalf("failure reason = %q", st.failedReason)
+	}
+}
+
+// TestPipelineRunsWithinGrantWindow: with Now pinned before ExpiresAt, the
+// expiry gate must not trip and the run proceeds to a normal success.
+func TestPipelineRunsBeforeExpiry(t *testing.T) {
+	expires := time.Unix(1_700_100_000, 0)
+	grantJSON, _ := json.Marshal(intent.Grant{
+		Repo:      intent.Repo{Owner: "acme", Name: "repo"},
+		IssuedAt:  time.Unix(1_700_000_000, 0),
+		ExpiresAt: expires,
+	})
+	metaJSON, _ := json.Marshal(UpgradeMeta{Scope: "security", BaseRef: "main"})
+	st := &fakeStore{run: ledger.Run{ID: "r5", Grant: grantJSON, Meta: metaJSON, Decision: "allow"}}
+	sb := fakeSandbox{wt: "/tmp/fake-worktree"}
+	ex := &fakeExec{result: executor.Result{GitHubRef: "acme/repo#9"}}
+	p := &Pipeline{
+		Store:   st,
+		Agent:   fakeAgent{intents: []intent.Envelope{openPREnvelope(t, "r5")}},
+		Exec:    ex,
+		Sandbox: func(ctx context.Context, repo string) (runtime.Sandbox, error) { return sb, nil },
+		Now:     func() time.Time { return time.Unix(1_700_000_000, 0) }, // before expires
+	}
+	ref, err := p.Run(context.Background(), "r5")
+	if err != nil {
+		t.Fatalf("run with unexpired grant must not error: %v", err)
+	}
+	if ref != "acme/repo#9" || ex.calls != 1 || st.last != ledger.RunSucceeded {
+		t.Fatalf("ref=%q execCalls=%d status=%q", ref, ex.calls, st.last)
 	}
 }

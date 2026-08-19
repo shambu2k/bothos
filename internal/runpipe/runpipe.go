@@ -48,6 +48,18 @@ type Pipeline struct {
 	Agent   runtime.AgentRuntime
 	Exec    Executor
 	Sandbox Sandboxer
+	// Now returns the current time. It defaults to time.Now but may be
+	// injected in tests to make grant-expiry checks deterministic.
+	Now func() time.Time
+}
+
+// now is the injected-clock seam: nil falls back to the wall clock so
+// struct-literal assembly in cmd/worker/main.go needs no field.
+func (p *Pipeline) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
 }
 
 // Run executes the security orchestration and returns the GitHub ref (e.g.
@@ -80,7 +92,7 @@ func (p *Pipeline) Run(ctx context.Context, runID string) (string, error) {
 	// A stale grant is a terminal, zero-value run: the executor would reject
 	// any intent at execute time and the agent run (up to the wall cap) is
 	// pure wasted tokens. Fail fast before starting the agent instead.
-	if time.Now().After(g.ExpiresAt) {
+	if p.now().After(g.ExpiresAt) {
 		return fail(fmt.Errorf("grant expired at %s (dispatched %s)", g.ExpiresAt, g.IssuedAt))
 	}
 

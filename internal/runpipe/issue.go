@@ -22,6 +22,18 @@ type IssuePipeline struct {
 	Agent   runtime.AgentRuntime
 	Exec    Executor
 	Sandbox Sandboxer
+	// Now returns the current time (wall clock by default; injected in
+	// tests for deterministic grant-expiry checks).
+	Now func() time.Time
+}
+
+// now is the injected-clock seam: nil falls back to the wall clock so
+// struct-literal assembly sites need no change.
+func (p *IssuePipeline) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
 }
 
 func (p *IssuePipeline) Run(ctx context.Context, runID string) (string, error) {
@@ -49,7 +61,7 @@ func (p *IssuePipeline) Run(ctx context.Context, runID string) (string, error) {
 	if grant.Scope.Kind != intent.ScopeIssue || grant.Scope.Number < 1 {
 		return fail(fmt.Errorf("issue pipeline requires a numbered issue grant"))
 	}
-	if time.Now().After(grant.ExpiresAt) {
+	if p.now().After(grant.ExpiresAt) {
 		return fail(fmt.Errorf("grant expired at %s (dispatched %s)", grant.ExpiresAt, grant.IssuedAt))
 	}
 

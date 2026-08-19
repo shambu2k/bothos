@@ -147,6 +147,67 @@ func TestIssuePipelineBlockedPostsTrustedHandoff(t *testing.T) {
 	}
 }
 
+// TestIssuePipelineExpiryFailsFastAndSkipsAgent: a stale issue grant must
+// be rejected before the agent starts, deterministically via the injected
+// clock, and recorded as a failed run. rejectAgent would panic if the
+// runtime were invoked, proving fail-fast.
+func TestIssuePipelineExpiryFailsFastAndSkipsAgent(t *testing.T) {
+	grant := issueGrant(t, "issue-expiry")
+	grant.IssuedAt = time.Unix(1_700_000_000, 0)
+	grant.ExpiresAt = time.Unix(1_700_003_600, 0) // fixed past expiry
+	store := &fakeStore{run: issueRun(t, grant)}
+	sandboxCalled := false
+	pipeline := &IssuePipeline{
+		Store: store,
+		Agent: rejectAgent{}, // would panic if invoked
+		Exec:  &fakeExec{},
+		Sandbox: func(context.Context, string) (runtime.Sandbox, error) {
+			sandboxCalled = true
+			return fakeSandbox{wt: "/tmp/issue"}, nil
+		},
+		Now: func() time.Time { return time.Unix(1_700_007_200, 0) }, // after expiry
+	}
+	_, err := pipeline.Run(context.Background(), grant.RunID)
+	if err == nil {
+		t.Fatal("expected error for expired issue grant")
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("error missing 'expired': %v", err)
+	}
+	if sandboxCalled {
+		t.Fatal("sandbox must not be created for an expired grant")
+	}
+	if store.last != ledger.RunFailed {
+		t.Fatalf("expected RunFailed, got %q", store.last)
+	}
+	if !store.failureCalled || !strings.Contains(store.failedReason, "expired") {
+		t.Fatalf("failure reason = %q", store.failedReason)
+	}
+}
+
+func TestIssuePipelineRunsBeforeExpiry(t *testing.T) {
+	grant := issueGrant(t, "issue-window")
+	grant.ExpiresAt = time.Unix(1_700_100_000, 0)
+	store := &fakeStore{run: issueRun(t, grant)}
+	exec := &fakeExec{result: executor.Result{Kind: intent.KindOpenPR, GitHubRef: "acme/widget#9"}}
+	pipeline := &IssuePipeline{
+		Store: store,
+		Agent: fakeAgentFunc(func(_ context.Context, in runtime.RunInput) (runtime.RunResult, error) {
+			return runtime.RunResult{Intents: []intent.Envelope{openPREnvelope(t, grant.RunID)}}, nil
+		}),
+		Exec:    exec,
+		Sandbox: func(context.Context, string) (runtime.Sandbox, error) { return fakeSandbox{wt: "/tmp/issue"}, nil },
+		Now:     func() time.Time { return time.Unix(1_700_000_000, 0) }, // before expiry
+	}
+	ref, err := pipeline.Run(context.Background(), grant.RunID)
+	if err != nil {
+		t.Fatalf("issue run within grant window must not error: %v", err)
+	}
+	if ref != "acme/widget#9" || exec.calls != 1 || store.last != ledger.RunSucceeded {
+		t.Fatalf("ref=%q execCalls=%d status=%q", ref, exec.calls, store.last)
+	}
+}
+
 type fakeAgentFunc func(context.Context, runtime.RunInput) (runtime.RunResult, error)
 
 func (f fakeAgentFunc) Run(ctx context.Context, in runtime.RunInput) (runtime.RunResult, error) {
